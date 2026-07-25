@@ -97,12 +97,49 @@ public sealed class Tick(
             case Stage.Review:
                 await RunReviewAsync(item, worktreePath, ct).ConfigureAwait(false);
                 break;
+            case Stage.Clarify:
+                await RunClarifyFallbackAsync(item, worktreePath, ct).ConfigureAwait(false);
+                break;
             default:
                 await RunSpecKitStageAsync(item, stage.Value, worktreePath, ct).ConfigureAwait(false);
                 break;
         }
 
         return (int)Cli.ExitCode.Ok;
+    }
+
+    // Clarify blocks (FR-018). Without a live channel this is the comment fallback (FR-019/027):
+    // read the markers specify materialized, post them as one numbered comment, and move the item
+    // to waiting — the operator answers by reply, which a later tick collects.
+    private async Task RunClarifyFallbackAsync(WorkItem item, string worktreePath, CancellationToken ct)
+    {
+        var specDir = FindSpecDir(worktreePath);
+        var specFile = specDir is null ? null : System.IO.Path.Combine(specDir, "spec.md");
+        var specText = specFile is not null && File.Exists(specFile)
+            ? await File.ReadAllTextAsync(specFile, ct).ConfigureAwait(false)
+            : string.Empty;
+
+        var questions = ClarifyMarkers.Extract(specText);
+        if (questions.Count == 0)
+        {
+            log.WriteLine("clarify: no markers to resolve — advancing.");
+            await github.RemoveLabelAsync(item.Number, "status/waiting", ct).ConfigureAwait(false);
+            return;
+        }
+
+        var bodies = await github.GetCommentBodiesAsync(item.Number, ct).ConfigureAwait(false);
+        if (IdempotencyMarker.AlreadyPresent(bodies, "questions", $"clarify-{item.Number}"))
+        {
+            log.WriteLine("clarify: questions already posted — waiting on the operator.");
+            return;
+        }
+
+        var comment = ClarifyMarkers.QuestionsComment(
+            item.Number, questions, "no live session established for this run");
+        await github.AddCommentAsync(item.Number, comment, ct).ConfigureAwait(false);
+        await github.AddLabelsAsync(item.Number, ["stage/clarify", "status/waiting"], ct).ConfigureAwait(false);
+        await github.RemoveLabelAsync(item.Number, "status/ready", ct).ConfigureAwait(false);
+        log.WriteLine($"clarify: posted {questions.Count} question(s); waiting on the operator.");
     }
 
     private string ResolveClaudeConfig() =>
