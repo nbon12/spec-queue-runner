@@ -31,9 +31,29 @@ public static class CommandDispatcher
         return args[0] switch
         {
             "version" => Version(),
+            "demo" => Demo(args),
             "tick" or "doctor" => NotYetImplemented(args[0]),
             _ => Unknown(args[0]),
         };
+    }
+
+    private static int Demo(string[] args)
+    {
+        if (args.Length < 3)
+        {
+            Console.Error.WriteLine("usage: spec-runner demo <owner/repo> <operator-login>  (GH_TOKEN env)");
+            return (int)ExitCode.ConfigInvalid;
+        }
+
+        try
+        {
+            return DemoCommand.RunAsync(args[1], args[2]).GetAwaiter().GetResult();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"demo failed: {ex.Message}");
+            return (int)ExitCode.InternalError;
+        }
     }
 
     private static int Version()
