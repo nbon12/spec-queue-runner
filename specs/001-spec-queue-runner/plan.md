@@ -59,7 +59,7 @@ failure and arbitrary mid-tick kills.
 
 *GATE: Must pass before Phase 0 research. Re-checked after Phase 1 design.*
 
-Gates derived from `.specify/memory/constitution.md` v1.1.0.
+Gates derived from `.specify/memory/constitution.md` v3.0.0.
 
 | # | Gate | Source | Initial | Post-design |
 |---|---|---|---|---|
@@ -84,6 +84,10 @@ Gates derived from `.specify/memory/constitution.md` v1.1.0.
 | 19 | Branch protection assumed; merge gate configurable | §6, FR-056, FR-033b | ✅ | ✅ `doctor` checks protection; auto-merge gated on review passing |
 | 27 | Auto-merged work produces a digest; spend over threshold blocks | §3, §6, FR-033c/d | ✅ | ✅ Digest before merge; cost added to always-block list |
 | 28 | Review runs in a fresh session; checks cross-spec drift | §9, FR-034a1/c1 | ✅ | ✅ No session resumption; coverage-bounded drift check |
+| 29 | Tick runs in a Docker container; no host .NET/tmux | §2, FR-052a | ✅ | ✅ Verified by the probe (R15); build/run is `linux-arm64` in-image |
+| 30 | PAT is a mounted secret, not the Keychain | §2, §6, FR-052 | ✅ | ✅ `SecretFileStore` + `[secret].github_pat_file`; Keychain removed |
+| 31 | Workspace trust pre-seeded at worktree creation | §3, FR-012a | ✅ | ✅ Verified by the probe (§3); one JSON write per worktree |
+| 32 | claude.ai credential monitored for expiry | §3, FR-052b | ✅ | ✅ `doctor` checks expiry; in-container `/login` in a named volume |
 | 20 | Config validated at startup, fail-fast | §7 | ✅ | ✅ Validation table in config contract |
 | 21 | Usage limits are routine: revert to ready, exit 0 | §7, FR-043 | ✅ | ✅ Detection corpus as Tier 1 theory |
 | 22 | Decision comments posted before continuing | §7, FR-031 | ✅ | ✅ Ordering is part of the contract |

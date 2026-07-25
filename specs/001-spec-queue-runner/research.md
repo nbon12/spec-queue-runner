@@ -132,9 +132,11 @@ handled correctly.
 kind, so a killed tick cannot wedge the instance — which matters because the Tier 3
 crash-convergence tests kill ticks at arbitrary points by design.
 
-**Caveat recorded**: This is advisory within a single machine, which is exactly the scope
-required (locks are per-instance and instances never coordinate, §3). It offers nothing across
-NFS or containers; that is not a supported topology.
+**Caveat recorded**: This is advisory within a single filesystem namespace, which is exactly
+the scope required — the lock lives **inside the instance's own container** (R15), guarding only
+that instance's overlapping ticks, and instances never coordinate (§3). It is not meant to
+synchronize across containers or hosts, and does not need to: one instance = one container =
+one lock. (An NFS-backed lock path would be unreliable and is not a supported layout.)
 
 ## R8 — Scheduling
 
