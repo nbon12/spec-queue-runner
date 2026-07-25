@@ -8,6 +8,25 @@
 
 **Input**: User description: "Design and build an unattended worker (\"Spec Queue Runner\") that pulls work items from a GitHub Issues book of work and drives each one through the SpecKit pipeline autonomously overnight, resuming across Claude Code usage-limit resets, escalating to a live Remote Control conversation on the operator's phone whenever a decision needs a human, and integrating finished work through pull requests. One runner instance serves exactly one repository; every Claude Code invocation for a work item — live or headless — runs in that item's own git worktree."
 
+## Clarifications
+
+### Session 2026-07-25
+
+- Q: How is the single allowlisted operator identity established and verified? → A: A per-instance config field names the operator's GitHub login explicitly; authorship of every issue and comment is verified against the GitHub API's authenticated author identity (never display names or body signatures).
+- Q: When a run exceeds the autonomous-decision cap on a kind with no clarify stage (chore, spike, audit)? → A: Block on human via the existing irreversible-decision machinery — live session within waking hours, comment fallback otherwise; kinds with a clarify stage return there as their form of the same block.
+- Q: How is a work item marked recurring, and where does the successor's configuration come from? → A: A structured `Recurring:` line in the issue body, same convention as `Targets:`; the successor issue is filed with a copy of the body, carrying marker and configuration forward.
+- Q: What is the default tick interval? → A: 5 minutes, configurable per instance.
+
+### Session 2026-07-25 (code review stage)
+
+- Q: Where does the code-review stage sit relative to opening the pull request? → A: After the PR opens — review runs against the open PR's diff, and the item closes only once review completes.
+- Q: What does review do with what it finds? → A: Fixes what is reversible and reports the fix as a decision comment; blocks on irreversibility, like any other execution stage.
+- Q: What must the review examine? → A: Every file in the PR, as a before-and-after diff, plus verification that the tests the run wrote actually cover the acceptance scenarios the spec states in natural language.
+- Q: Which kinds are reviewed? → A: Every kind that writes code — feature, amendment, and chore. Spike investigates and audit is forbidden from modifying anything, so neither produces a diff to review.
+- Q: Does the runner merge the pull request, or does merging stay manual? → A: The runner auto-merges after review passes, and delivers a digest of what happened. Only genuinely risky or irreversible decisions escalate — notably estimated spend above a configured threshold (default $100). Rationale offered: the project is pre-customer with no production data. **This premise is time-bound and the decision is revisited when the repo serves real users, holds real data, or gains a deploy path to either.**
+- Q: Does review reuse the implementing run's context? → A: No. Every review runs in a fresh Claude Code session with no memory of the run that produced the diff, so it reads the change as a reviewer rather than as its author.
+- Q: What does review check besides this item's spec? → A: Regressions and drift against other specs — for every path the change touches, review consults every other spec whose coverage entry claims that path.
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - Unattended overnight execution (Priority: P1)
@@ -107,7 +126,7 @@ On its own recurring schedule, the runner selects the spec that has gone longest
 - What happens when two work items would otherwise need the same working directory at the same time — e.g. a live session parked for days on one item while a headless run executes a different item tonight? The design must make this collision structurally impossible (separate worktrees) rather than something a lock merely prevents.
 - What happens when the GitHub API is unreachable partway through a run? Work already committed in the item's worktree must survive; only the push, comment, and label updates are retried on a later tick.
 - What happens if the process is killed at an arbitrary point mid-tick (after a label change but before a comment post, after a commit but before a push, etc.)? Repeated ticks must converge to the same end state as an uninterrupted run, with no duplicated comments or labels.
-- What happens when an execution stage racks up an unusually long streak of small autonomous decisions? A run must stop and drop back to clarify past a configured cap, rather than compounding judgment calls unsupervised.
+- What happens when an execution stage racks up an unusually long streak of small autonomous decisions? Past a configured cap the run must stop and block on a human rather than compounding judgment calls unsupervised: kinds with a clarify stage return to clarify; kinds without one (chore, spike, audit) block through the same live-session-or-comment-fallback machinery used for irreversible decisions.
 - What happens when two runner instances (serving different repositories) draw on the same underlying Claude usage budget at the same time? Contention must resolve through the existing usage-limit retry path, with no cross-instance coordination required.
 - What happens when two runner instances each try to hold a live, phone-notified session at the same moment, if the live channel only supports one such session at a time? The instance that cannot establish one must fall back to the comment channel (User Story 5), not queue or fail silently.
 - What happens when a decision an item would otherwise make autonomously touches something that cannot be undone later — a destructive data migration, a call to a third party, a secret, a force-push, or another explicitly protected action? That class of decision must always block for a human, regardless of the run's general "decide and report" posture.
@@ -119,14 +138,14 @@ On its own recurring schedule, the runner selects the spec that has gone longest
 
 **Scheduling**
 
-- **FR-001**: The system MUST invoke its tick on a fixed schedule via a mechanism that still runs a missed invocation after the host machine wakes from sleep, rather than silently dropping it.
+- **FR-001**: The system MUST invoke its tick on a fixed schedule — default every 5 minutes, configurable per instance — via a mechanism that still runs a missed invocation after the host machine wakes from sleep, rather than silently dropping it.
 - **FR-002**: A tick MUST acquire an exclusive lock scoped to its own runner instance before doing anything else, and MUST exit immediately without side effects if that lock is already held.
 - **FR-003**: A tick that finds no work to do MUST exit within a few seconds.
 
 **Book of work**
 
 - **FR-004**: The system MUST read and write all queue state exclusively through the issue tracker of its one configured repository — no separate database or state store.
-- **FR-005**: The system MUST act only on issue and comment content authored by an explicitly allowlisted operator account; content from any other author MUST be ignored entirely — never read into a prompt, never replied to. The system's own posted comments MUST be recognized as its own output, never mistaken for operator input.
+- **FR-005**: The system MUST act only on issue and comment content authored by exactly one allowlisted operator account, named explicitly in the instance's configuration; authorship MUST be verified against the issue tracker API's authenticated author identity, never against display names, body signatures, or claimed email addresses. Content from any other author MUST be ignored entirely — never read into a prompt, never replied to. The system's own posted comments MUST be recognized as its own output, never mistaken for operator input.
 - **FR-006**: Issue and comment content MUST be treated as untrusted input that supplies requests and answers, and MUST NOT be able to redirect a run's behavior away from the subject matter of the item it was posted to.
 - **FR-007**: Every tick MUST collect and process comment replies on all currently-waiting and currently-live items before selecting new work.
 - **FR-008**: Each collected reply MUST be judged: a resolving reply unblocks the item (returns it to ready); a merely conversational reply receives a response comment and leaves the item waiting.
@@ -142,7 +161,7 @@ On its own recurring schedule, the runner selects the spec that has gone longest
 
 **Stages**
 
-- **FR-015**: Each kind of work item MUST traverse its declared sequence of pipeline stages (feature and amendment: intake → specify → clarify → plan → tasks → analyze → implement; chore: intake → plan → implement; spike and audit: intake → implement).
+- **FR-015**: Each kind of work item MUST traverse its declared sequence of pipeline stages (feature and amendment: intake → specify → clarify → plan → tasks → analyze → implement → review; chore: intake → plan → implement → review; spike and audit: intake → implement). Spike and audit are the only kinds that skip review, because neither produces a code diff — a spike investigates and reports, and an audit is forbidden from modifying anything.
 - **FR-016**: Intake MUST infer an item's kind and targets from the issue text and record that classification as a decision comment; intake MUST block only when intent is genuinely unrecoverable from the text, never merely because classification is uncertain.
 - **FR-017**: A manually applied pipeline-stage label MUST take precedence over the computed stage, so an item can be deliberately held at a given stage.
 - **FR-018**: The shaping stages (intake, specify, clarify) MUST never write code, under any circumstance; specify MUST run unattended and express any ambiguity as clarification markers rather than asking a question directly.
@@ -166,11 +185,27 @@ On its own recurring schedule, the runner selects the spec that has gone longest
 
 **Execution stages**
 
-- **FR-030**: Execution stages (plan, tasks, analyze, implement) MUST always run unattended, proceeding through all of them without pausing for input, with analyze's recommendations folded directly into the work rather than surfaced separately.
-- **FR-031**: On an ambiguity during an execution stage, the system MUST assess whether the choice is reversible: if reversible, it MUST decide, post the decision comment immediately — before any further action, so a crash never loses the reasoning — and continue; if irreversible, it MUST block, using the live channel (FR-021) or its fallback (FR-027).
+- **FR-030**: Execution stages (plan, tasks, analyze, implement, review) MUST always run unattended, proceeding through all of them without pausing for input, with analyze's recommendations folded directly into the work rather than surfaced separately.
+- **FR-031**: On an ambiguity during an execution stage, the system MUST assess whether the choice is reversible: if reversible, it MUST decide, post the decision comment immediately — before any further action, so a crash never loses the reasoning — and continue; if irreversible, it MUST block, using the live channel (FR-021) or its fallback (FR-027). A run that exceeds the configured cap of autonomous decisions MUST likewise stop and block: an item whose kind includes a clarify stage returns to clarify; an item whose kind has none (chore, spike, audit) blocks through the same live-channel-or-fallback machinery.
 - **FR-032**: Work MUST be committed to the item's own branch, and decision comments MUST reference the commits they correspond to.
-- **FR-033**: On completing implement, the system MUST push the item's branch; open a pull request whose description is generated from the issue, the changelog, and the decision comments; post a closing comment linking that pull request; record the paths it authored in the coverage manifest on that same branch; close the issue; and remove the item's worktree. Merging the pull request MUST remain a manual, human act.
+- **FR-033**: On completing implement, the system MUST push the item's branch and open a pull request whose description is generated from the issue, the changelog, and the decision comments. The item is **not** finished at this point — the pull request is the surface the review stage works against, so the issue MUST remain open and the worktree MUST be preserved until review completes.
+- **FR-033a**: On completing review, the system MUST push any review fixes to the same branch; post the digest (FR-033c); record the paths it authored in the coverage manifest on that branch; merge the pull request if auto-merge is enabled and review recorded no blocking finding; post a closing comment linking the pull request; close the issue; and remove the item's worktree.
+- **FR-033b**: Auto-merge is an instance configuration, default enabled. The runner MUST NOT merge when review recorded a blocking finding, when the item blocked on the operator and that block is unresolved, or when auto-merge is disabled — in those cases the pull request is left open for the operator and the closing comment states why. Branch protection on the main branch MUST remain in force regardless: every change reaches main through a pull request, whoever presses merge.
+- **FR-033c**: Every auto-merged item MUST produce a **digest** posted to its pull request immediately before the merge, so the change is described in the same notification the operator already receives. The digest states what changed, what the review examined and found, what decisions the run made and why, and what it deliberately did not do. Merging without a digest is prohibited — the digest is what replaces the operator's reading of the diff.
+- **FR-033d**: A decision whose estimated one-off or recurring spend exceeds the configured threshold (default $100) MUST be treated as irreversible and MUST block for the operator, regardless of how reversible the change looks in code terms. This sits alongside the existing always-block list, which with auto-merge enabled is the only remaining human checkpoint.
 - **FR-034**: Requested changes on a pull request MUST be expressed as a new issue rather than by reopening or altering the original.
+
+**Code review**
+
+- **FR-034a**: Every kind that writes code (feature, amendment, chore) MUST traverse a review stage after its pull request is opened and before its issue closes. The review runs unattended in the item's own worktree, against the diff between the item's branch and the main branch.
+- **FR-034a1**: Every review MUST run in a **fresh session with no memory of the run that produced the diff** — it MUST NOT resume or inherit the implementing run's conversation. The reviewer reads the change as a reviewer, not as its author, and cannot rely on intent it never saw. A run that resumed the implementing session would be self-review with extra steps.
+- **FR-034b**: The review MUST examine **each file the pull request touches, as a before-and-after comparison** — the state of the file on the main branch against its state on the item's branch — rather than reviewing only the final content. Files the pull request does not touch are outside the review's scope.
+- **FR-034c**: The review MUST verify that the automated tests the run wrote **actually cover the acceptance scenarios the item's spec states in natural language**, and MUST report any acceptance scenario for which it can find no corresponding test. This is the enforcement mechanism for the requirement that a spec never describe behavior no test verifies.
+- **FR-034c1**: The review MUST additionally check the change for **regressions and drift against other specs**. For every path the pull request touches, the review MUST consult every *other* spec whose coverage-manifest entry claims that path, and report any behavior the change breaks or contradicts in those specs. The coverage manifest bounds the check: a spec that does not claim a touched path is not consulted, so the check stays proportional to what the change actually affects.
+- **FR-034d**: The review's instructions MUST be read from a version-controlled prompt file in the repository, referenced by the instance's configuration. The review prompt MUST NOT be sourced from issue or comment text, since the definition of the pipeline may never come from operator-supplied content.
+- **FR-034e**: Review findings follow execution-stage ambiguity policy: a reversible finding MUST be fixed on the item's branch and reported as a decision comment referencing the fixing commit; an irreversible finding MUST block via the live channel or its comment fallback.
+- **FR-034f**: A review that finds nothing MUST still record that it ran and found nothing, so a silent review and an absent review are distinguishable after the fact.
+- **FR-034g**: Review MUST NOT expand the scope of the item. A finding that calls for work beyond the item's stated intent MUST be filed as a new issue rather than fixed in place, consistent with forward-only correction.
 
 **Spec authorship**
 
@@ -187,7 +222,7 @@ On its own recurring schedule, the runner selects the spec that has gone longest
 
 **Recurrence**
 
-- **FR-042**: A work item marked recurring that reaches a terminal state MUST cause the system to file a successor issue inheriting its kind and configuration; closed issues MUST remain closed, and the book of work MUST be append-only.
+- **FR-042**: A work item is marked recurring by a structured `Recurring:` line in its issue body, following the same convention as the `Targets:` line. When such an item reaches a terminal state, the system MUST file a successor issue whose body is a copy of the original's — carrying the recurrence marker, kind, and configuration forward; closed issues MUST remain closed, and the book of work MUST be append-only.
 
 **Failure handling**
 
@@ -220,11 +255,13 @@ On its own recurring schedule, the runner selects the spec that has gone longest
 - **Stage**: A position in the pipeline, defined by a predicate over the item's worktree and/or issue state. Its label is a cache; the predicate is authoritative and doubles as the crash-recovery checkpoint.
 - **Spec**: A checked-in, present-tense description of pipeline-generated behavior. Contains no runner metadata.
 - **Coverage manifest**: A generated, checked-in record of which paths each spec claims to describe, authoritative as it exists on the main branch.
-- **Pull request**: The integration and human-review gate. Opened by the system; merged only by the operator.
+- **Pull request**: The integration path and the surface the review stage works against. Opened by the system at the end of implement, reviewed, then merged by the system when auto-merge is enabled and review found nothing blocking — otherwise left open for the operator with a stated reason. Every change reaches the main branch through one, whoever presses merge.
+- **Digest**: The account of an auto-merged change, posted to its pull request immediately before the merge. Because the operator does not approve the merge, this is their primary record of what happened rather than a supplement to reading the diff.
 - **Tick**: One stateless execution of the runner: collect replies, reconcile long-lived state, then perform at most one unit of new work.
 - **Live session**: An interactive Claude Code session scoped to one blocked item, exposed through Remote Control, with no timeout, resumable by its identifier, and disposable.
 - **Decision comment**: A record of one execution-stage judgment call — the ambiguity, the choice made, the alternatives considered, the rationale, and the commit it corresponds to.
-- **Finding**: An audit's report of a discrepancy between a spec and its covered code, naming which side appears wrong without prescribing the correction.
+- **Review**: An execution stage that runs against an item's open pull request, examining every file the pull request touches as a before-and-after comparison and checking the tests the run wrote against the acceptance scenarios its spec states. Its instructions come from a version-controlled prompt file, never from issue text. It fixes what is reversible, reports what it fixed, and blocks on what is not.
+- **Finding**: An audit's report of a discrepancy between a spec and its covered code, naming which side appears wrong without prescribing the correction. Distinct from a review finding, which is acted on rather than merely reported.
 
 ## Success Criteria *(mandatory)*
 
@@ -237,6 +274,7 @@ On its own recurring schedule, the runner selects the spec that has gone longest
 - **SC-005 (Live)**: An item that blocks during waking hours produces exactly one phone push and one conversation; the operator's response resolves the item entirely through that conversation, with no additional typing required anywhere else.
 - **SC-006 (Patient)**: A live session left unanswered for 24 hours across two separate periods of machine sleep is still answerable and still resolves the item on the first reply — with no timeout, no duplicate push, and no question asked twice.
 - **SC-007 (Degradable)**: With the live channel unavailable, a blocking item's questions reach the operator as one issue comment stating the reason, are answered by reply, and the item completes; the very next blocked item after the channel recovers goes live again with no manual reset.
+- **SC-009 (Reviewed)**: No item that writes code closes without a recorded review. For an item whose implementation deliberately omits a test for one of its spec's acceptance scenarios, the review names that scenario as uncovered; for an item whose diff contains a reversible defect, the review fixes it on the branch and reports the fix as a decision comment referencing the fixing commit.
 - **SC-008 (Clean)**: No spec on the main branch ever contains a status field, a transcript, or a decision log; the only dialogue-related content a live-path issue ever receives is its session-identifier line; and an audit run against a deliberately stale spec reports the discrepancy, names the wrong side, and leaves both spec and code unchanged.
 
 ## Assumptions
@@ -247,12 +285,12 @@ On its own recurring schedule, the runner selects the spec that has gone longest
   - Whether resuming a session by its recorded identifier interacts cleanly with the live channel, or produces a fresh identifier that must be re-recorded.
   - Whether the live channel can hold two independent sessions open at once across two different runner instances, or is limited to one at a time process-wide.
 - An explicit, named list of always-block actions (destructive schema migrations, outbound calls to third parties, secrets, force-push, and any other explicitly configured protected path) is treated as more trustworthy than a runtime judgment call about reversibility, and is assumed to exist and be checked before FR-031's "decide and report" path is taken.
-- A run that has made more than a small, fixed number of autonomous decisions in a row (assumed default: five) is treated as suspect and is stopped and returned to clarify rather than allowed to keep compounding judgment calls unattended.
+- A run that has made more than a small, fixed number of autonomous decisions in a row (assumed default: five) is treated as suspect and is stopped and blocked on a human (per FR-031) rather than allowed to keep compounding judgment calls unattended.
 - Repositories configured for a runner instance are assumed to be exclusively operator-owned; pointing an unattended agent at an employer's or client's repository is explicitly out of scope as a contractual and intellectual-property concern, not merely a technical one.
 - The runner's own repository is assumed to be just another configured instance, pointed at itself; its very first version is assumed to be built by hand from this spec, after which further changes to it flow through its own queue the same as any other repository.
 - The following are assumed as given technical constraints supplied by the requester, rather than choices left open for the planning phase: the tick is a single-file console application; issue-tracker access goes through its REST API using a fine-grained, narrowly-scoped access token; process locking uses exclusive file locks released deterministically even on an unhandled failure; unattended Claude Code invocations pass arguments programmatically rather than through concatenated shell strings; worktrees are managed with standard git worktree operations, never the shared clone; live sessions are managed through a terminal multiplexer, with all of its state treated as disposable; and the unattended execution path is assumed to run unchanged across the operator's various machines without platform-specific branches, aside from the multiplexer calls themselves.
 - One-time manual setup of the live channel (account login, workspace trust, notification settings, and matching sign-in on the mobile app) is assumed to precede any automated use, verified by a self-check command rather than performed by the runner itself.
 - Recovering access after an expired login is assumed to be a manual, out-of-band administrative act (e.g., a secure remote shell session), not a capability the runner itself provides.
-- The following are explicitly assumed out of scope for this feature: coordination of any kind between separate runner instances; automatically merging a finished pull request; treating any spec as a universally true description of the whole codebase; automatically reconciling a detected spec/code mismatch; any form of rollback (correction is assumed to always be forward-only, via new issues); approval prompts for a decision already reported as made; mirroring live-session conversations into issue comments (only the outcome is assumed to need to be durable, not the dialogue that produced it); any chat-platform integration beyond the issue tracker and the live channel; inbound network endpoints for instant wake-up; and running more than one unit of work at a time within a single instance.
-- Given the small request volume implied by a schedule on the order of once every few minutes per instance, the issue tracker's API rate limit is assumed not to be a binding constraint, and no pre-flight quota check is assumed necessary before attempting a call.
+- The following are explicitly assumed out of scope for this feature: coordination of any kind between separate runner instances; treating any spec as a universally true description of the whole codebase; automatically reconciling a detected spec/code mismatch; any form of rollback (correction is assumed to always be forward-only, via new issues); approval prompts for a decision already reported as made; mirroring live-session conversations into issue comments (only the outcome is assumed to need to be durable, not the dialogue that produced it); any chat-platform integration beyond the issue tracker and the live channel; inbound network endpoints for instant wake-up; and running more than one unit of work at a time within a single instance.
+- Given the small request volume implied by the default 5-minute tick per instance, the issue tracker's API rate limit is assumed not to be a binding constraint, and no pre-flight quota check is assumed necessary before attempting a call.
 - Given that the filesystem and the issue tracker are assumed to hold all state that matters, a live session that runs for an unusually long time is assumed not to need special handling; if degraded output is ever observed in practice, starting a fresh session seeded from the current worktree state is assumed to lose nothing that matters.

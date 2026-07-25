@@ -1,6 +1,55 @@
 <!--
 Sync Impact Report
 ==================
+Version change: 1.2.0 -> 2.0.0
+Modified principles:
+  Security Model (section 6) — REMOVED the auto-merge prohibition. The runner MAY merge its own
+    pull requests after the review stage passes, when the instance is configured for it. The
+    consequence is stated rather than hidden: with auto-merge on, the always-block list becomes
+    the ONLY human checkpoint on unattended work, so section 3's block list is correspondingly
+    hardened and given a cost dimension.
+  Architectural Invariants (section 3) — the always-block list gains an estimated-spend
+    threshold (default $100, configurable), and the list is now named as load-bearing rather
+    than advisory. Added a reporting duty: an auto-merged item MUST deliver a digest of what
+    happened, since the operator no longer sees the work by merging it.
+  Executable & Living Specifications (section 9) — review now also enforces the existing
+    cross-spec consistency and corpus-invariant rules, checking a change against every OTHER
+    spec whose coverage entry includes a touched path.
+Added sections: None.
+Removed sections: None.
+Version bump rationale (MAJOR): removal of a non-negotiable rule (the auto-merge prohibition)
+  that section 6 previously described as the structural human checkpoint.
+CONDITION ON THIS AMENDMENT — the rationale offered was that the project is pre-customer, with
+  no production data and therefore no data-loss exposure. That premise is time-bound. This
+  amendment MUST be revisited, and auto-merge disabled or narrowed, at the first of: the repo
+  serving real users, holding real data, or acquiring a deploy path that reaches either.
+Templates requiring updates:
+  .specify/templates/plan-template.md ✅ compatible — Constitution Check populated at plan time.
+  .specify/templates/spec-template.md ✅ compatible — no change needed.
+  .specify/templates/tasks-template.md ✅ compatible — test-first mandate already stated.
+Follow-up TODOs: None.
+
+----- prior amendment -----
+Version change: 1.1.0 -> 1.2.0
+Modified principles:
+  Architectural Invariants (section 3) — the execution-stage enumeration now includes a
+    **review** stage: plan, tasks, analyze, implement, review. Review is an execution stage and
+    follows execution ambiguity policy (decide and report; block only on irreversibility).
+  Executable & Living Specifications (section 9) — named the review stage as the enforcement
+    mechanism for the existing "no unverified claims" rule: review verifies that the tests a run
+    actually wrote cover the acceptance scenarios the spec states in natural language, rather
+    than leaving that traceability to assertion.
+Added sections: None.
+Removed sections: None.
+Templates requiring updates:
+  .specify/templates/plan-template.md ✅ compatible — Constitution Check populated at plan time.
+  .specify/templates/spec-template.md ✅ compatible — no change needed.
+  .specify/templates/tasks-template.md ✅ compatible — test-first mandate already stated.
+Version bump rationale (MINOR): a stage was added to a governed enumeration and an existing
+  principle gained a named enforcement mechanism; no existing rule was removed or redefined.
+Follow-up TODOs: None.
+
+----- prior amendment -----
 Version change: 1.0.0 -> 1.1.0
 Modified principles:
   Security Model (section 6) — materially expanded the injection defenses: prompt injection
@@ -48,7 +97,7 @@ Follow-up TODOs: None.
 
 # Spec Queue Runner Constitution
 
-**Version**: 1.1.0 | **Ratified**: 2026-07-25 | **Last Amended**: 2026-07-25
+**Version**: 2.0.0 | **Ratified**: 2026-07-25 | **Last Amended**: 2026-07-25
 **Authors**: Project maintainers
 
 ## 1. Project Purpose
@@ -135,10 +184,23 @@ regression, not a style issue.
   existing failure paths (usage-limit revert; comment fallback).
 - **Ambiguity policy is a property of stage.** Shaping stages (intake, specify, clarify)
   block and ask, and MUST NOT write code under any circumstance. Execution stages (plan,
-  tasks, analyze, implement) decide and report — except where a wrong choice is
+  tasks, analyze, implement, review) decide and report — except where a wrong choice is
   irreversible, which blocks. Reversibility judgement MUST prefer an explicit always-block
-  list (destructive migrations, outbound third-party calls, secrets, force-push, configured
-  protected paths) over in-the-moment judgement.
+  list over in-the-moment judgement. The list is: destructive migrations, outbound third-party
+  calls, secrets, force-push, configured protected paths, and any change whose **estimated
+  recurring or one-off spend exceeds the configured threshold** (default $100). Where
+  auto-merge is enabled this list is the sole human checkpoint (§6) — a named, auditable list
+  is the only thing standing between an unattended run and an unreviewed merge.
+- **Auto-merged work MUST be reported.** When the runner merges its own pull request, the
+  operator no longer sees the change by approving it. The runner MUST therefore deliver a
+  digest of what happened — what changed, what the review found, what it decided and why —
+  through the channels §5 already permits. Merging silently is prohibited even where merging
+  automatically is not.
+- **Generated code is reviewed before the item closes.** A run that writes code MUST pass
+  through a review stage that examines the item's changes as a diff — the before and after of
+  every file the run touched — and verifies that the tests it wrote cover the acceptance
+  scenarios its spec states. Review is an execution stage: it fixes what it can and reports
+  the fix, and blocks only on irreversibility. An item is not done until it has been reviewed.
 - **Correction is forward-only.** Closed issues stay closed; the book is append-only;
   requested PR changes become new issues. No feature may introduce a rollback or reopen path.
 - **Audits observe; they never reconcile.** An audit MUST NOT modify a spec or code,
@@ -212,8 +274,15 @@ at every stage, without exception.
 - **Headless invocations are contained**: they run with the permission mode configured for
   unattended use, in the item's worktree, with no access to secrets beyond what the repo
   legitimately needs.
-- **The review gate is structural.** Branch protection on `main` (no direct pushes, PR
-  required) MUST be assumed and never worked around; auto-merge is prohibited.
+- **Branch protection is structural; the merge gate is configurable.** Branch protection on
+  `main` (no direct pushes, PR required) MUST be assumed and never worked around — every change
+  reaches main through a pull request. Whether the *runner* may merge that pull request is an
+  instance configuration. When auto-merge is enabled, the runner MAY merge only after the review
+  stage has completed and recorded no blocking finding.
+- **With auto-merge enabled, the always-block list is the only human checkpoint.** This is the
+  cost of the trade and MUST be treated as such: the list in section 3 is load-bearing, not
+  advisory, and additions to it are security changes rather than conveniences. An instance that
+  enables auto-merge without a reviewed block list has no human in the loop at all.
 - **Operator-owned repos only.** Configured repos must be operator-owned; the runner MUST
   NOT be pointed at employer or client code on a personal subscription.
 - The injection guarantee MUST be enforced by tests (canary property tests, below), not by
@@ -271,7 +340,9 @@ Specifications are the executable contract of the system and MUST stay true at a
   merged code.
 - **No unverified claims**: a spec MUST NOT describe behaviour that no executable test (or
   named manual probe) verifies. Acceptance scenarios MUST be traceable to tests and tests
-  back to acceptance criteria.
+  back to acceptance criteria. **The review stage is the enforcement mechanism**: it checks
+  the tests a run actually wrote against the acceptance scenarios its spec states in natural
+  language, so traceability is verified rather than asserted.
 - **Living and truthful (`spec.md` only)**: when implemented behaviour diverges from any
   `spec.md` — including older, already-merged specs — the divergence MUST be resolved before
   merge: update the spec to reflect reality, or fix the code. Spec drift is a defect.
@@ -282,7 +353,11 @@ Specifications are the executable contract of the system and MUST stay true at a
   drifted MUST be corrected.
 - **Cross-spec consistency**: contradictions between specs MUST be reconciled before merge —
   update the superseded spec, record which prevails and why. The spec corpus MUST be free of
-  mutually contradictory executable assertions at all times.
+  mutually contradictory executable assertions at all times. **The review stage enforces this
+  too**: for every path a change touches, review MUST check that change against every *other*
+  spec whose coverage entry claims that path, and report any drift or regression it introduces
+  in behaviour those specs describe. Coverage bounds the check — a spec that does not claim a
+  touched path is not consulted.
 - **Scope of truth is narrow by design**: a spec's claim extends only to paths under its
   `specs/COVERAGE.md` entry. Code outside coverage is described by no spec, and no spec may
   claim it. Specs contain no runner metadata of any kind — no status, no transcripts, no
