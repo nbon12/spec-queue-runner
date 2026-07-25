@@ -1,0 +1,19 @@
+# Build outputs — rebuilt inside the image
+**/bin/
+**/obj/
+publish/
+artifacts/
+
+# VCS / editor
+.git/
+.idea/
+.vscode/
+
+# Secrets and local state — must never enter the image (FR-052)
+*.pat
+.env*
+
+# Docs and probe scaffolding not needed at build time
+probe/
+specs/
+*.md

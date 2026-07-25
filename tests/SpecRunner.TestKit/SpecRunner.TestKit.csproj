@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The shared test harness: fake claude recorder, fixture repos, in-memory GitHub.
+       A library, not a test runner itself — the three suites reference it. -->
+  <PropertyGroup>
+    <RootNamespace>SpecRunner.TestKit</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/SpecRunner/SpecRunner.csproj" />
+  </ItemGroup>
+
+</Project>

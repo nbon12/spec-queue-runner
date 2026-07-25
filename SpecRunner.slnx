@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/SpecRunner/SpecRunner.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/SpecRunner.IntegrationTests/SpecRunner.IntegrationTests.csproj" />
+    <Project Path="tests/SpecRunner.PropertyTests/SpecRunner.PropertyTests.csproj" />
+    <Project Path="tests/SpecRunner.TestKit/SpecRunner.TestKit.csproj" />
+    <Project Path="tests/SpecRunner.UnitTests/SpecRunner.UnitTests.csproj" />
+  </Folder>
+</Solution>

@@ -1,1 +1,26 @@
 .idea/
+
+# .NET
+bin/
+obj/
+*.user
+*.suo
+[Dd]ebug/
+[Rr]elease/
+publish/
+artifacts/
+
+# Test / coverage
+[Tt]est[Rr]esults/
+coverage/
+*.trx
+*.coverage
+
+# Local state / secrets (never commit)
+*.pat
+.env*
+!.env.example
+
+# Editor / OS
+.DS_Store
+*.swp

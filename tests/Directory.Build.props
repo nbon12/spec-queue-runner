@@ -1,0 +1,11 @@
+<Project>
+  <!-- Marks everything under tests/ as a test project (see root Directory.Build.props),
+       and imports the root props so tests inherit net10.0, nullable, analyzers. -->
+  <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))" />
+  <PropertyGroup>
+    <IsTestProject>true</IsTestProject>
+    <IsPackable>false</IsPackable>
+    <!-- Test fixtures deliberately exercise nullable edge cases; don't fail the build on them. -->
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+  </PropertyGroup>
+</Project>

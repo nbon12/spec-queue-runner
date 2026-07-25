@@ -1,0 +1,14 @@
+<Project>
+  <!-- Applies to every project in the solution (constitution §8: consistent style, analyzers). -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
+    <!-- The runner ships as one binary for the container (linux-arm64). -->
+    <RuntimeIdentifier Condition="'$(IsTestProject)' != 'true' AND '$(RuntimeIdentifier)' == ''"></RuntimeIdentifier>
+  </PropertyGroup>
+</Project>
