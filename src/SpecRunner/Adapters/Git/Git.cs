@@ -28,6 +28,23 @@ public sealed class Git(IProcessRunner processes)
         return r.Stdout.Trim();
     }
 
+    /// <summary>
+    /// Paths tracked on <paramref name="branch"/> (recursive). Used to answer "is this spec on
+    /// main yet?" for held-gating (FR-010) without checking anything out.
+    /// </summary>
+    public async Task<IReadOnlyList<string>> ListPathsAsync(
+        string repo, string branch, CancellationToken ct = default)
+    {
+        var r = await processes.RunAsync("git", ["ls-tree", "-r", "--name-only", branch], repo, ct: ct)
+            .ConfigureAwait(false);
+        if (r.ExitCode != 0)
+        {
+            return [];
+        }
+
+        return r.Stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    }
+
     private async Task Run(string worktree, CancellationToken ct, params string[] args)
     {
         var r = await processes.RunAsync("git", args, worktree, ct: ct).ConfigureAwait(false);

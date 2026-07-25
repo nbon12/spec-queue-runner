@@ -114,6 +114,44 @@ public class PipelineTests
     }
 
     [Fact]
+    public async Task Item_targeting_a_spec_not_on_base_is_held_not_scheduled()
+    {
+        var tmp = Directory.CreateTempSubdirectory("held");
+        try
+        {
+            var github = new InMemoryGitHubClient();
+            github.AddUser("operator", 100);
+            // Targets a spec that isn't on base (ls-tree returns nothing) → must hold, untouched.
+            github.AddIssue(9, "Amend the widget spec", "Targets: specs/010-widget/spec.md",
+                "operator", 100, "status/ready", "kind/amendment", "stage/intake");
+
+            var config = new InstanceConfig
+            {
+                Slug = "op/repo", Path = "/clone",
+                WorktreesRoot = Path.Combine(tmp.FullName, "work"),
+                OperatorLogin = "operator", BaseBranch = "master",
+                GitHubPatFile = "/run/secrets/pat",
+                ClaudeConfigPath = Path.Combine(tmp.FullName, ".claude.json"),
+                Lock = Path.Combine(tmp.FullName, ".lock"),
+            };
+            // ls-tree returns empty ⇒ no specs on base ⇒ the target is missing.
+            var processes = new RecordingProcessRunner();
+
+            await new Tick(config, github, processes, TextWriter.Null).RunAsync();
+
+            // Held: still ready, still open, no worktree/PR work happened.
+            Assert.True(github.Issue(9).Open);
+            Assert.Contains("status/ready", github.Issue(9).Labels);
+            Assert.Empty(github.OpenedPrs);
+            Assert.DoesNotContain("stage/implement", github.Issue(9).Labels);
+        }
+        finally
+        {
+            tmp.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Recurring_item_files_a_successor_when_it_closes()
     {
         var tmp = Directory.CreateTempSubdirectory("pipeline3");
