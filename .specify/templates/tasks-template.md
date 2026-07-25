@@ -9,7 +9,7 @@ description: "Task list template for feature implementation"
 
 **Prerequisites**: plan.md (required), spec.md (required for user stories), research.md, data-model.md, contracts/
 
-**Tests**: The examples below include test tasks. Tests are OPTIONAL - only include them if explicitly requested in the feature specification.
+**Tests**: Per the constitution (Spec Kit Testing Constitution, test-first), tests are REQUIRED for pure decision logic (Tier 1) and process/git-touching behaviour (Tier 2), and MUST be written before implementation. The crash-convergence and injection-canary property families (Tier 3) MUST be updated when side-effect ordering, prompt construction, or reply collection changes.
 
 **Organization**: Tasks are grouped by user story to enable independent implementation and testing of each story.
 
