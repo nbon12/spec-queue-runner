@@ -1,0 +1,3 @@
+- Name: spec-queue-runner
+- Purpose: unattended SpecKit pipeline worker
+- Runtime: .NET 10 in Docker
