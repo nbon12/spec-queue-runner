@@ -18,9 +18,11 @@ RUN dotnet publish src/SpecRunner/SpecRunner.csproj \
 FROM debian:bookworm-slim AS runtime
 
 # git: worktrees (≥2.5). tmux: live sessions. ripgrep: Claude Code search.
+# tini: a real PID 1 that reaps children — the tick spawns claude/tmux/git every run,
+# and without reaping those become zombies (observed in the probe container).
 # The .NET runtime is NOT installed — the binary is self-contained.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates curl git tmux ripgrep \
+        ca-certificates curl git tmux ripgrep tini \
     && rm -rf /var/lib/apt/lists/*
 
 ARG USERNAME=runner
@@ -35,5 +37,6 @@ ENV DISABLE_AUTOUPDATER=1
 
 COPY --chown=${USERNAME}:${USERNAME} --from=build /app/spec-runner /usr/local/bin/spec-runner
 
+# tini as PID 1 reaps the claude/tmux/git children each tick spawns.
 # launchd on the host invokes `docker run … spec-runner tick <config>` (FR-052a).
-ENTRYPOINT ["/usr/local/bin/spec-runner"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/spec-runner"]
