@@ -65,6 +65,37 @@ public sealed class GitHubClient : Port
     public async Task AddLabelsAsync(int number, IReadOnlyList<string> labels, CancellationToken ct = default) =>
         await _client.Issue.Labels.AddToIssue(_owner, _repo, number, labels.ToArray()).ConfigureAwait(false);
 
+    public async Task RemoveLabelAsync(int number, string label, CancellationToken ct = default)
+    {
+        try
+        {
+            await _client.Issue.Labels.RemoveFromIssue(_owner, _repo, number, label).ConfigureAwait(false);
+        }
+        catch (NotFoundException)
+        {
+            // label wasn't on the issue — the desired end state already holds
+        }
+    }
+
+    public async Task<IReadOnlyList<string>> GetCommentBodiesAsync(int number, CancellationToken ct = default)
+    {
+        var comments = await _client.Issue.Comment.GetAllForIssue(_owner, _repo, number).ConfigureAwait(false);
+        return comments.Select(c => c.Body ?? string.Empty).ToList();
+    }
+
+    public async Task<string> CreatePullRequestAsync(
+        string title, string body, string head, string baseBranch, CancellationToken ct = default)
+    {
+        var pr = await _client.PullRequest
+            .Create(_owner, _repo, new NewPullRequest(title, head, baseBranch) { Body = body })
+            .ConfigureAwait(false);
+        return pr.HtmlUrl;
+    }
+
+    public async Task CloseIssueAsync(int number, CancellationToken ct = default) =>
+        await _client.Issue.Update(_owner, _repo, number, new IssueUpdate { State = ItemState.Closed })
+            .ConfigureAwait(false);
+
     private static WorkItem ToWorkItem(Issue issue) => new(
         Number: issue.Number,
         Title: issue.Title ?? string.Empty,
