@@ -298,3 +298,21 @@ On its own recurring schedule, the runner selects the spec that has gone longest
 - The following are explicitly assumed out of scope for this feature: coordination of any kind between separate runner instances; treating any spec as a universally true description of the whole codebase; automatically reconciling a detected spec/code mismatch; any form of rollback (correction is assumed to always be forward-only, via new issues); approval prompts for a decision already reported as made; mirroring live-session conversations into issue comments (only the outcome is assumed to need to be durable, not the dialogue that produced it); any chat-platform integration beyond the issue tracker and the live channel; inbound network endpoints for instant wake-up; and running more than one unit of work at a time within a single instance.
 - Given the small request volume implied by the default 5-minute tick per instance, the issue tracker's API rate limit is assumed not to be a binding constraint, and no pre-flight quota check is assumed necessary before attempting a call.
 - Given that the filesystem and the issue tracker are assumed to hold all state that matters, a live session that runs for an unusually long time is assumed not to need special handling; if degraded output is ever observed in practice, starting a fresh session seeded from the current worktree state is assumed to lose nothing that matters.
+
+## Implementation Status
+
+*Living record of how the requirements above are realized, current as of the 2026-07-25 build. Kept here because the constitution treats specs as living and executable (§9); it records design decisions and verification method, not task tracking.*
+
+**Verified by the automated suite (131 tests, all run in-container credit-free).** The full pipeline is wired end-to-end and was demonstrated live once (issue → intake → implement → PR → review → auto-merge → close). Covered by tests: intake classification; stage derivation from the worktree; the implement→PR→review→merge pipeline; auto-merge on/off (FR-033a–d); held-gating (FR-010); recurrence successors (FR-042); the audit stage — read-only, no PR (FR-038–041); in-progress labeling and stale reclaim (FR-011/044); the injection canary and crash-convergence property families; and the live channel's decision logic (below).
+
+**Design decisions that refine the requirements:**
+
+- **Live-block resolution (FR-024/019)** is detected from durable state, not a chat scrape: a block is resolved when either the session has written its answers into the worktree (the clarify markers clear) **or** the operator posts a plain, non-marker comment. Either signal reaps the now-redundant tmux session and returns the item to the pipeline.
+- **Stale-reclaim timing (FR-044)** reads the age of the `status/in-progress` label from the issue's own event timeline (`GetLabelAppliedAt`), so no timestamp is stored runner-side; live and held items carry different labels and are exempt by construction.
+- **Live-session resumption (FR-022/047)** records and resumes by Claude Code's **conversation id**, recovered by reading the newest transcript under `~/.claude/projects/<encoded-worktree>/`. The path encoding matches the probe transcript path (separators → dashes); an unreadable folder simply yields no id and fails safe to the comment fallback.
+- The four probe-dependent defaults flagged under Assumptions (workspace-trust carry-over, kickoff delivery, resume-by-id, one-session-at-a-time) were all validated by the 2026-07-25 probe and are now implemented (FR-012a/021a/022/025).
+
+**Requires manual verification (cannot be exercised by the offline suite):**
+
+- The **live Remote Control handshake** — spawn → phone attach → kickoff delivery → resume-by-id on the same URL — is verified by hand (probe §5/§7), since a live session is a real Claude conversation over Remote Control with nothing to fake. The orchestration around it (waking-hours gate, spawn/record/reap/resume, fallback selection) is automated.
+- The **`~/.claude/projects` path encoding** should be re-confirmed in-container if a future Claude Code changes how it names transcript folders.
