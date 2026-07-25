@@ -83,6 +83,15 @@ public sealed class GitHubClient : Port
         return comments.Select(c => c.Body ?? string.Empty).ToList();
     }
 
+    public async Task<IReadOnlyList<SpecRunner.Ports.IssueComment>> GetCommentsAsync(
+        int number, CancellationToken ct = default)
+    {
+        var comments = await _client.Issue.Comment.GetAllForIssue(_owner, _repo, number).ConfigureAwait(false);
+        return comments
+            .Select(c => new SpecRunner.Ports.IssueComment(c.User?.Id ?? 0, c.Body ?? string.Empty))
+            .ToList();
+    }
+
     public async Task<DateTimeOffset?> GetLabelAppliedAtAsync(
         int number, string label, CancellationToken ct = default)
     {

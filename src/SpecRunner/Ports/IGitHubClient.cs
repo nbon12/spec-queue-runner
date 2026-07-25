@@ -27,6 +27,13 @@ public interface IGitHubClient
     Task<IReadOnlyList<string>> GetCommentBodiesAsync(int number, CancellationToken ct = default);
 
     /// <summary>
+    /// Comments with their authors, in order — needed to tell an operator's live-session reply
+    /// (FR-024) from the runner's own marker comments. The author id is the immutable numeric id,
+    /// the same identity the allowlist checks (FR-005/R5).
+    /// </summary>
+    Task<IReadOnlyList<IssueComment>> GetCommentsAsync(int number, CancellationToken ct = default);
+
+    /// <summary>
     /// When a label was most recently applied to an issue, or null if it isn't/never was. Drives
     /// stale-reclaim (FR-044): the age of the <c>status/in-progress</c> label is how long a run has
     /// been stuck. Read from the issue's own event timeline — no runner-side state.
@@ -48,3 +55,6 @@ public interface IGitHubClient
 
 /// <summary>An opened pull request: its number (for merge) and URL (for links).</summary>
 public sealed record PullRequestRef(int Number, string Url);
+
+/// <summary>One issue comment with its author's immutable numeric id.</summary>
+public sealed record IssueComment(long AuthorId, string Body);

@@ -64,8 +64,19 @@ public sealed class InMemoryGitHubClient : IGitHubClient
     public Task AddCommentAsync(int number, string body, CancellationToken ct = default)
     {
         _issues[number].Comments.Add(body);
+        _issues[number].Authored.Add(new IssueComment(0, body)); // 0 = the runner itself
         return Task.CompletedTask;
     }
+
+    /// <summary>Seed a comment from a specific author (e.g. the operator's live-session reply).</summary>
+    public void AddComment(int number, long authorId, string body)
+    {
+        _issues[number].Comments.Add(body);
+        _issues[number].Authored.Add(new IssueComment(authorId, body));
+    }
+
+    public Task<IReadOnlyList<IssueComment>> GetCommentsAsync(int number, CancellationToken ct = default) =>
+        Task.FromResult<IReadOnlyList<IssueComment>>(_issues[number].Authored);
 
     public Task AddLabelsAsync(int number, IReadOnlyList<string> labels, CancellationToken ct = default)
     {
@@ -131,6 +142,7 @@ public sealed class InMemoryGitHubClient : IGitHubClient
         public required long AuthorId { get; init; }
         public required List<string> Labels { get; init; }
         public List<string> Comments { get; } = [];
+        public List<IssueComment> Authored { get; } = [];
         public bool Open { get; set; }
 
         public WorkItem ToWorkItem() => new(Number, Title, Body, AuthorLogin, AuthorId, [.. Labels]);

@@ -137,6 +137,41 @@ public class LiveChannelTests
     }
 
     [Fact]
+    public async Task Live_sweep_resolves_when_the_operator_replies_by_comment()
+    {
+        var tmp = Directory.CreateTempSubdirectory("live5");
+        try
+        {
+            var worktreesRoot = Path.Combine(tmp.FullName, "work");
+            SeedSpec(worktreesRoot, 8, withMarker: true); // worktree still shows the marker...
+
+            var github = new InMemoryGitHubClient();
+            github.AddUser("operator", 100);
+            github.AddIssue(8, "Amend widget", "Targets: none", "operator", 100,
+                "status/live", "kind/amendment", "stage/clarify");
+            github.Issue(8).Comments.Add("<!-- spec-runner:v1 kind=session id=live-8 -->\nLive session: conv-xyz");
+            github.Issue(8).Authored.Add(new SpecRunner.Ports.IssueComment(0,
+                "<!-- spec-runner:v1 kind=session id=live-8 -->\nLive session: conv-xyz"));
+            // ...but the operator answered the block directly in a comment (FR-024).
+            github.AddComment(8, 100, "Use the blue variant, ship it.");
+
+            var processes = new RecordingProcessRunner();
+            var tick = new Tick(ConfigFor(tmp.FullName, worktreesRoot), github, processes,
+                TextWriter.Null, new InMemoryClaudeSessionStore(), () => new TimeOnly(12, 0));
+            await tick.RunAsync();
+
+            var issue = github.Issue(8);
+            Assert.DoesNotContain("status/live", issue.Labels);   // redundant session closed
+            Assert.Contains("status/ready", issue.Labels);
+            Assert.Contains(processes.Invocations, i => i.FileName == "tmux" && i.Arguments.Contains("kill-session"));
+        }
+        finally
+        {
+            tmp.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Live_sweep_resumes_a_dead_session_by_conversation_id()
     {
         var tmp = Directory.CreateTempSubdirectory("live4");

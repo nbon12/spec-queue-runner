@@ -26,4 +26,7 @@ public sealed class OperatorIdentity
 
     /// <summary>True only when the item's author is the resolved operator (numeric-id match).</summary>
     public bool IsOperator(WorkItem item) => _operatorId is { } id && item.AuthorId == id;
+
+    /// <summary>True only when a numeric author id is the resolved operator (e.g. a comment author).</summary>
+    public bool IsOperatorId(long authorId) => _operatorId is { } id && authorId == id;
 }

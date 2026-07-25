@@ -274,6 +274,16 @@ public sealed class Tick(
         log.WriteLine($"live session {sessionId} open for #{item.Number}; awaiting the operator.");
     }
 
+    // An operator-authored comment that isn't one of the runner's own marker comments — i.e. a
+    // human reply resolving the block by comment while the live session is open (FR-024).
+    private async Task<bool> OperatorRepliedAsync(OperatorIdentity op, int number, CancellationToken ct)
+    {
+        var comments = await github.GetCommentsAsync(number, ct).ConfigureAwait(false);
+        return comments.Any(c =>
+            op.IsOperatorId(c.AuthorId) &&
+            !c.Body.Contains("<!-- spec-runner:", StringComparison.Ordinal));
+    }
+
     private async Task<string?> PollForConversationIdAsync(string worktreePath, CancellationToken ct)
     {
         const int attempts = 30;
@@ -311,11 +321,13 @@ public sealed class Tick(
         var tmux = new Adapters.Tmux.TmuxSessions(processes);
         var session = LiveSession.TmuxName(item.Number);
 
-        // Resolved? The clarify exit predicate is markers-cleared; if the session wrote the answers
-        // into the spec, derivation no longer lands on Clarify.
+        // Resolved by either path: the session wrote answers into the spec (markers cleared), OR
+        // the operator answered by comment while the session was open (FR-024) — a plain reply, not
+        // one of the runner's own marker comments. Either closes the now-redundant session.
         var specDir = FindSpecDir(worktreePath);
-        var resolved = specDir is null || MarkerCount(specDir) == 0;
-        if (resolved)
+        var resolvedByWorktree = specDir is null || MarkerCount(specDir) == 0;
+        var resolvedByComment = await OperatorRepliedAsync(op, item.Number, ct).ConfigureAwait(false);
+        if (resolvedByWorktree || resolvedByComment)
         {
             await tmux.KillSessionAsync(session, ct).ConfigureAwait(false);
             await github.AddCommentAsync(item.Number,
