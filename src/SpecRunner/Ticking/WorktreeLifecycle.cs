@@ -13,7 +13,8 @@ public sealed class WorktreeLifecycle(
     IProcessRunner git,
     string clonePath,
     string worktreesRoot,
-    string claudeConfigPath)
+    string claudeConfigPath,
+    string baseBranch = "main")
 {
     public string PathFor(int number) => Path.Combine(worktreesRoot, number.ToString());
 
@@ -34,7 +35,7 @@ public sealed class WorktreeLifecycle(
             // Branch off main if new; -B is safe if the branch already exists from a prior life.
             var result = await git.RunAsync(
                 "git",
-                ["worktree", "add", "-B", branch, path, "main"],
+                ["worktree", "add", "-B", branch, path, baseBranch],
                 workingDirectory: clonePath,
                 ct: ct).ConfigureAwait(false);
 

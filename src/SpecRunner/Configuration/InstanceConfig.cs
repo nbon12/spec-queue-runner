@@ -10,6 +10,7 @@ public sealed record InstanceConfig
     public required string Path { get; init; }
     public required string WorktreesRoot { get; init; }
     public required string OperatorLogin { get; init; }
+    public string BaseBranch { get; init; } = "main";
     public int TickInterval { get; init; } = 300;
     public string WakingHours { get; init; } = "08:00-23:00";
     public int StaleHours { get; init; } = 2;

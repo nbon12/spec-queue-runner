@@ -34,6 +34,7 @@ public static class ConfigLoader
             Path = Str("path"),
             WorktreesRoot = Str("worktrees_root"),
             OperatorLogin = Str("operator_login"),
+            BaseBranch = Str("base_branch", "main"),
             TickInterval = Int("tick_interval", 300),
             WakingHours = Str("waking_hours", "08:00-23:00"),
             StaleHours = Int("stale_hours", 2),

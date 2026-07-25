@@ -76,7 +76,7 @@ public sealed class Tick(
 
         var kind = kindFromLabels.Value;
         var worktrees = new WorktreeLifecycle(
-            processes, config.Path, config.WorktreesRoot, ResolveClaudeConfig());
+            processes, config.Path, config.WorktreesRoot, ResolveClaudeConfig(), config.BaseBranch);
         var worktreePath = await worktrees.EnsureAsync(item.Number, ct).ConfigureAwait(false);
 
         var snapshot = SnapshotFrom(worktreePath, kind, item);
@@ -192,7 +192,7 @@ public sealed class Tick(
             Review and merge is the operator's gate.
             """;
         var url = await github.CreatePullRequestAsync(
-            item.Title, prBody, branch, BaseBranch, ct).ConfigureAwait(false);
+            item.Title, prBody, branch, config.BaseBranch, ct).ConfigureAwait(false);
         log.WriteLine($"opened PR: {url}");
 
         await github.AddCommentAsync(item.Number,
@@ -202,9 +202,6 @@ public sealed class Tick(
         await github.CloseIssueAsync(item.Number, ct).ConfigureAwait(false);
         log.WriteLine($"#{item.Number} closed; PR open for review.");
     }
-
-    // The repo's integration branch. Configurable in a fuller build; the demo repo uses this.
-    private const string BaseBranch = "master";
 
     // The demo drives the implement path directly; a full build reads spec/plan/tasks presence
     // from the worktree. For a chore, intake -> (plan) -> implement; here we treat a classified
