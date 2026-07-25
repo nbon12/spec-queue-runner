@@ -152,6 +152,79 @@ public class PipelineTests
     }
 
     [Fact]
+    public async Task Stale_in_progress_item_is_reclaimed_to_ready()
+    {
+        var tmp = Directory.CreateTempSubdirectory("stale1");
+        try
+        {
+            var github = new InMemoryGitHubClient();
+            github.AddUser("operator", 100);
+            github.AddIssue(12, "Wedged item", "Targets: none", "operator", 100,
+                "status/in-progress", "kind/chore", "stage/intake");
+            // Applied 5h ago; threshold is 2h ⇒ stale.
+            var now = new DateTimeOffset(2026, 7, 25, 12, 0, 0, TimeSpan.Zero);
+            github.SetLabeledAt(12, "status/in-progress", now.AddHours(-5));
+
+            var config = new InstanceConfig
+            {
+                Slug = "op/repo", Path = "/clone",
+                WorktreesRoot = Path.Combine(tmp.FullName, "work"),
+                OperatorLogin = "operator", BaseBranch = "master", StaleHours = 2,
+                GitHubPatFile = "/run/secrets/pat",
+                ClaudeConfigPath = Path.Combine(tmp.FullName, ".claude.json"),
+                Lock = Path.Combine(tmp.FullName, ".lock"),
+            };
+            var processes = new RecordingProcessRunner();
+            await new Tick(config, github, processes, TextWriter.Null,
+                null, null, () => now).RunAsync();
+
+            Assert.DoesNotContain("status/in-progress", github.Issue(12).Labels);
+            Assert.Contains("status/ready", github.Issue(12).Labels);
+            Assert.Contains(github.Issue(12).Comments,
+                c => c.Contains("kind=reclaim", System.StringComparison.Ordinal));
+        }
+        finally
+        {
+            tmp.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Fresh_in_progress_item_is_not_reclaimed()
+    {
+        var tmp = Directory.CreateTempSubdirectory("stale2");
+        try
+        {
+            var github = new InMemoryGitHubClient();
+            github.AddUser("operator", 100);
+            github.AddIssue(13, "Working item", "Targets: none", "operator", 100,
+                "status/in-progress", "kind/chore", "stage/intake");
+            var now = new DateTimeOffset(2026, 7, 25, 12, 0, 0, TimeSpan.Zero);
+            github.SetLabeledAt(13, "status/in-progress", now.AddMinutes(-10)); // 10 min < 2h
+
+            var config = new InstanceConfig
+            {
+                Slug = "op/repo", Path = "/clone",
+                WorktreesRoot = Path.Combine(tmp.FullName, "work"),
+                OperatorLogin = "operator", BaseBranch = "master", StaleHours = 2,
+                GitHubPatFile = "/run/secrets/pat",
+                ClaudeConfigPath = Path.Combine(tmp.FullName, ".claude.json"),
+                Lock = Path.Combine(tmp.FullName, ".lock"),
+            };
+            await new Tick(config, github, new RecordingProcessRunner(), TextWriter.Null,
+                null, null, () => now).RunAsync();
+
+            Assert.Contains("status/in-progress", github.Issue(13).Labels); // left alone
+            Assert.DoesNotContain(github.Issue(13).Comments,
+                c => c.Contains("kind=reclaim", System.StringComparison.Ordinal));
+        }
+        finally
+        {
+            tmp.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Audit_reports_and_closes_without_opening_a_pr()
     {
         var tmp = Directory.CreateTempSubdirectory("audit");

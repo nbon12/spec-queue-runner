@@ -83,6 +83,24 @@ public sealed class GitHubClient : Port
         return comments.Select(c => c.Body ?? string.Empty).ToList();
     }
 
+    public async Task<DateTimeOffset?> GetLabelAppliedAtAsync(
+        int number, string label, CancellationToken ct = default)
+    {
+        var events = await _client.Issue.Events.GetAllForIssue(_owner, _repo, number).ConfigureAwait(false);
+        DateTimeOffset? latest = null;
+        foreach (var e in events)
+        {
+            if (string.Equals(e.Event.StringValue, "labeled", StringComparison.OrdinalIgnoreCase) &&
+                e.Label?.Name == label &&
+                (latest is null || e.CreatedAt > latest))
+            {
+                latest = e.CreatedAt;
+            }
+        }
+
+        return latest;
+    }
+
     public async Task<PullRequestRef> CreatePullRequestAsync(
         string title, string body, string head, string baseBranch, CancellationToken ct = default)
     {

@@ -22,14 +22,18 @@ public sealed class Tick(
     IProcessRunner processes,
     TextWriter log,
     IClaudeSessionStore? sessions = null,
-    Func<TimeOnly>? clock = null)
+    Func<TimeOnly>? clock = null,
+    Func<DateTimeOffset>? utcClock = null)
 {
-    // Real collaborators by default; tests inject a fake store and a fixed clock. The store reads
-    // Claude Code's on-disk transcripts; the clock drives the waking-hours gate (FR-021/026).
+    // Real collaborators by default; tests inject a fake store and fixed clocks. The store reads
+    // Claude Code's on-disk transcripts; the time-of-day clock drives the waking-hours gate
+    // (FR-021/026); the wall clock drives stale-reclaim age arithmetic (FR-044).
     private readonly IClaudeSessionStore _sessions =
         sessions ?? new ClaudeSessionStore(DefaultProjectsRoot(config));
     private readonly Func<TimeOnly> _now =
         clock ?? (() => TimeOnly.FromDateTime(DateTime.Now));
+    private readonly Func<DateTimeOffset> _utcNow =
+        utcClock ?? (() => DateTimeOffset.UtcNow);
 
     public async Task<int> RunAsync(CancellationToken ct = default)
     {
@@ -51,6 +55,11 @@ public sealed class Tick(
             log.WriteLine($"could not resolve operator '{config.OperatorLogin}' — failing closed.");
             return (int)Cli.ExitCode.EnvironmentFailure;
         }
+
+        // Stale reclaim (FR-044): an item stuck in-progress past the threshold — a run that died
+        // mid-stage without reverting — is reset to ready so it isn't wedged. Housekeeping, not the
+        // tick's unit of work; live and held items are exempt (they carry different labels).
+        await ReclaimStaleAsync(op, ct).ConfigureAwait(false);
 
         // Live sweep (FR-057): before taking new work, tend any open live session — resume it if
         // its process died, or reap it and advance the item if the operator resolved the block.
@@ -122,6 +131,11 @@ public sealed class Tick(
 
         log.WriteLine($"#{item.Number} kind={kind} stage={stage}");
 
+        // Mark in-progress before invoking Claude (FR-011). If the tick dies mid-stage the label
+        // persists and a later tick's stale sweep reclaims it (FR-044); a clean run clears it below,
+        // and paths that move the item elsewhere (clarify → waiting/live) simply leave it cleared.
+        await github.AddLabelsAsync(item.Number, ["status/in-progress"], ct).ConfigureAwait(false);
+
         switch (stage)
         {
             case Stage.Implement when kind is Kind.Audit:
@@ -141,7 +155,40 @@ public sealed class Tick(
                 break;
         }
 
+        // Stage completed without a crash — clear the in-progress marker so the stale sweep never
+        // reclaims a healthy item.
+        await github.RemoveLabelAsync(item.Number, "status/in-progress", ct).ConfigureAwait(false);
         return (int)Cli.ExitCode.Ok;
+    }
+
+    // Reset any operator item stuck in-progress past the staleness threshold (FR-044). The label's
+    // own applied-at timestamp is the age; live/held items never carry it, so they're exempt by
+    // construction. Idempotent — an item already reclaimed simply isn't in-progress anymore.
+    private async Task ReclaimStaleAsync(OperatorIdentity op, CancellationToken ct)
+    {
+        var inProgress = await github.ListOpenIssuesWithLabelAsync("status/in-progress", ct).ConfigureAwait(false);
+        foreach (var item in inProgress)
+        {
+            if (!op.IsOperator(item))
+            {
+                continue;
+            }
+
+            var since = await github.GetLabelAppliedAtAsync(item.Number, "status/in-progress", ct)
+                .ConfigureAwait(false);
+            if (since is null ||
+                !StaleReclaim.ShouldReclaim(QueueStatus.InProgress, since.Value, _utcNow(), config.StaleHours))
+            {
+                continue;
+            }
+
+            await github.AddCommentAsync(item.Number,
+                $"<!-- spec-runner:v1 kind=reclaim id=reclaim-{item.Number} -->\nReclaimed as stale (in-progress > {config.StaleHours}h); returning to ready.",
+                ct).ConfigureAwait(false);
+            await github.RemoveLabelAsync(item.Number, "status/in-progress", ct).ConfigureAwait(false);
+            await github.AddLabelsAsync(item.Number, ["status/ready"], ct).ConfigureAwait(false);
+            log.WriteLine($"reclaimed #{item.Number} — stale in-progress reset to ready.");
+        }
     }
 
     private static string DefaultProjectsRoot(InstanceConfig config)

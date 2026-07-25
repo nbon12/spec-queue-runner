@@ -26,6 +26,13 @@ public interface IGitHubClient
     /// <summary>All comment bodies on an issue — used to scan for the runner's own markers (R10).</summary>
     Task<IReadOnlyList<string>> GetCommentBodiesAsync(int number, CancellationToken ct = default);
 
+    /// <summary>
+    /// When a label was most recently applied to an issue, or null if it isn't/never was. Drives
+    /// stale-reclaim (FR-044): the age of the <c>status/in-progress</c> label is how long a run has
+    /// been stuck. Read from the issue's own event timeline — no runner-side state.
+    /// </summary>
+    Task<DateTimeOffset?> GetLabelAppliedAtAsync(int number, string label, CancellationToken ct = default);
+
     /// <summary>Open a PR from <paramref name="head"/> into <paramref name="baseBranch"/>.</summary>
     Task<PullRequestRef> CreatePullRequestAsync(
         string title, string body, string head, string baseBranch, CancellationToken ct = default);

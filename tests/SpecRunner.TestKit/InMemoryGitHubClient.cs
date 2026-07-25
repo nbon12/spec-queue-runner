@@ -11,6 +11,13 @@ public sealed class InMemoryGitHubClient : IGitHubClient
 {
     private readonly Dictionary<string, long> _users = new(StringComparer.Ordinal);
     private readonly Dictionary<int, MutableIssue> _issues = new();
+    private readonly Dictionary<(int, string), DateTimeOffset> _labeledAt = new();
+
+    /// <summary>Clock for label-application timestamps; tests override for determinism.</summary>
+    public Func<DateTimeOffset> Now { get; set; } = () => DateTimeOffset.UtcNow;
+
+    /// <summary>Seed exactly when a label was applied (for stale-reclaim timing tests).</summary>
+    public void SetLabeledAt(int number, string label, DateTimeOffset when) => _labeledAt[(number, label)] = when;
 
     public sealed record OpenedPr(int Number, string Title, string Head, string BaseBranch);
 
@@ -68,10 +75,15 @@ public sealed class InMemoryGitHubClient : IGitHubClient
             {
                 _issues[number].Labels.Add(l);
             }
+
+            _labeledAt[(number, l)] = Now();
         }
 
         return Task.CompletedTask;
     }
+
+    public Task<DateTimeOffset?> GetLabelAppliedAtAsync(int number, string label, CancellationToken ct = default) =>
+        Task.FromResult(_labeledAt.TryGetValue((number, label), out var when) ? when : (DateTimeOffset?)null);
 
     public Task RemoveLabelAsync(int number, string label, CancellationToken ct = default)
     {
