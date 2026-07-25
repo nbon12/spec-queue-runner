@@ -35,6 +35,7 @@ public static class CommandDispatcher
             "run-stage" => RunStage(args),
             "tick" => TickOnce(args),
             "doctor" => Doctor(args),
+            "install" => Install(args),
             _ => Unknown(args[0]),
         };
     }
@@ -120,6 +121,27 @@ public static class CommandDispatcher
         catch (Exception ex)
         {
             Console.Error.WriteLine($"run-stage failed: {ex.Message}");
+            return (int)ExitCode.InternalError;
+        }
+    }
+
+    private static int Install(string[] args)
+    {
+        if (args.Length < 3)
+        {
+            Console.Error.WriteLine(
+                "usage: spec-runner install <config-path> <image> [--write]");
+            return (int)ExitCode.ConfigInvalid;
+        }
+
+        var write = args.Length > 3 && args[3] == "--write";
+        try
+        {
+            return InstallCommand.Run(args[1], args[2], write);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"install failed: {ex.Message}");
             return (int)ExitCode.InternalError;
         }
     }

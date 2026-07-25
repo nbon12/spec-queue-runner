@@ -99,6 +99,19 @@ public sealed class GitHubClient : Port
         await _client.Issue.Update(_owner, _repo, number, new IssueUpdate { State = ItemState.Closed })
             .ConfigureAwait(false);
 
+    public async Task<int> CreateIssueAsync(
+        string title, string body, IReadOnlyList<string> labels, CancellationToken ct = default)
+    {
+        var create = new NewIssue(title) { Body = body };
+        foreach (var l in labels)
+        {
+            create.Labels.Add(l);
+        }
+
+        var issue = await _client.Issue.Create(_owner, _repo, create).ConfigureAwait(false);
+        return issue.Number;
+    }
+
     private static WorkItem ToWorkItem(Issue issue) => new(
         Number: issue.Number,
         Title: issue.Title ?? string.Empty,

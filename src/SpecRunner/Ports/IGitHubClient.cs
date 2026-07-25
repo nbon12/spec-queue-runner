@@ -34,6 +34,9 @@ public interface IGitHubClient
     Task MergePullRequestAsync(int number, CancellationToken ct = default);
 
     Task CloseIssueAsync(int number, CancellationToken ct = default);
+
+    /// <summary>File a new issue (recurrence successor, FR-042); returns its number.</summary>
+    Task<int> CreateIssueAsync(string title, string body, IReadOnlyList<string> labels, CancellationToken ct = default);
 }
 
 /// <summary>An opened pull request: its number (for merge) and URL (for links).</summary>

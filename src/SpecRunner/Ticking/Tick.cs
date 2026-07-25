@@ -299,6 +299,29 @@ public sealed class Tick(
             ct).ConfigureAwait(false);
         await github.CloseIssueAsync(item.Number, ct).ConfigureAwait(false);
         log.WriteLine($"#{item.Number} closed.");
+
+        // Recurrence (FR-042): a recurring item files a successor on reaching terminal state. The
+        // closed issue stays closed — the book is append-only. The successor re-enters at intake.
+        await FileSuccessorIfRecurringAsync(item, ct).ConfigureAwait(false);
+    }
+
+    private async Task FileSuccessorIfRecurringAsync(WorkItem item, CancellationToken ct)
+    {
+        var cadence = Recurrence.Cadence(item);
+        if (cadence is null)
+        {
+            return;
+        }
+
+        var body = $"""
+            <!-- spec-runner:v1 kind=recurrence id=successor-of-{item.Number} -->
+            Recurring successor of #{item.Number} (cadence: {cadence}).
+
+            {item.Body}
+            """;
+        var successor = await github.CreateIssueAsync(
+            item.Title, body, ["status/ready"], ct).ConfigureAwait(false);
+        log.WriteLine($"recurrence: filed successor #{successor} of #{item.Number} (cadence {cadence}).");
     }
 
     private static int? FindPrNumber(IEnumerable<string> commentBodies)

@@ -112,4 +112,42 @@ public class PipelineTests
             tmp.Delete(recursive: true);
         }
     }
+
+    [Fact]
+    public async Task Recurring_item_files_a_successor_when_it_closes()
+    {
+        var tmp = Directory.CreateTempSubdirectory("pipeline3");
+        try
+        {
+            var github = new InMemoryGitHubClient();
+            github.AddUser("operator", 100);
+            github.AddIssue(7, "Nightly audit", "Recurring: nightly\nTargets: none", "operator", 100,
+                "status/ready", "kind/chore", "stage/intake", "stage/implement");
+            github.Issue(7).Comments.Add("<!-- spec-runner:v1 kind=pr id=pr-7 number=71 -->");
+
+            var config = new InstanceConfig
+            {
+                Slug = "op/repo", Path = "/clone",
+                WorktreesRoot = Path.Combine(tmp.FullName, "work"),
+                OperatorLogin = "operator", BaseBranch = "master",
+                AutoMerge = true, SpendCap = 100,
+                GitHubPatFile = "/run/secrets/pat",
+                ClaudeConfigPath = Path.Combine(tmp.FullName, ".claude.json"),
+                Lock = Path.Combine(tmp.FullName, ".lock"),
+            };
+            var processes = new RecordingProcessRunner();
+
+            await new Tick(config, github, processes, TextWriter.Null).RunAsync();
+
+            Assert.False(github.Issue(7).Open);              // predecessor closed
+            var successor = github.Issue(8);                 // successor filed with the next number
+            Assert.True(successor.Open);
+            Assert.Contains("status/ready", successor.Labels);
+            Assert.Contains("Recurring: nightly", successor.Body, System.StringComparison.Ordinal);
+        }
+        finally
+        {
+            tmp.Delete(recursive: true);
+        }
+    }
 }

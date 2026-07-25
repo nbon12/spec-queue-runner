@@ -102,6 +102,14 @@ public sealed class InMemoryGitHubClient : IGitHubClient
         return Task.CompletedTask;
     }
 
+    public Task<int> CreateIssueAsync(
+        string title, string body, IReadOnlyList<string> labels, CancellationToken ct = default)
+    {
+        var number = _issues.Keys.DefaultIfEmpty(0).Max() + 1;
+        AddIssue(number, title, body, authorLogin: "spec-runner", authorId: 0, [.. labels]);
+        return Task.FromResult(number);
+    }
+
     public sealed class MutableIssue
     {
         public required int Number { get; init; }
