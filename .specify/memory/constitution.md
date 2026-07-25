@@ -1,6 +1,41 @@
 <!--
 Sync Impact Report
 ==================
+Version change: 2.0.0 -> 3.0.0
+Modified principles:
+  Technology Stack (section 2) — the runtime model is now containerized, validated by the
+    2026-07-25 architecture probe (probe/probe-results.md):
+    * Application: the tick is published for **linux-arm64** and runs **inside a Docker
+      container** for blast-radius isolation. Single-file publish is unchanged.
+    * Runtime/deployment: NEW mandate — launchd on the host fires the tick by invoking Docker
+      (`docker run`/`docker exec`), not the binary directly. The container image bundles the
+      .NET runtime, git, tmux, and Claude Code; there is no host .NET or tmux install.
+    * Secrets: the GitHub PAT is **no longer** referenced from the macOS Keychain (unreachable
+      from a Linux container). It is provided to the container as a mounted secret file or
+      Docker secret, never in config, the image, or the repo. Claude Code's own claude.ai
+      OAuth credential is minted by a one-time in-container `/login` and persisted in a named
+      Docker volume.
+    * Portability: the container IS the portability story — the whole tick runs on any Docker
+      host; launchd is the only remaining host-specific touchpoint.
+  Architectural Invariants (section 3) — added two invariants the probe proved load-bearing:
+    workspace-trust pre-seeding (the runner writes hasTrustDialogAccepted for a worktree
+    before its first interactive session) and credential-expiry monitoring (claude.ai logins
+    expire; doctor checks proactively).
+Added sections: None.
+Removed sections: None.
+Version bump rationale (MAJOR): redefinition of a mandated part of the stack — the runtime
+  model (host binary -> containerized) and the secret-storage mechanism (macOS Keychain ->
+  mounted secret) in section 2.
+EVIDENCE: this amendment is not speculative. The container path, in-container Remote Control,
+  workspace-trust pre-seeding, tmux kickoff, and session resumption were all empirically
+  verified on 2026-07-25; see probe/probe-results.md.
+Templates requiring updates:
+  .specify/templates/plan-template.md ✅ compatible — Constitution Check populated at plan time.
+  .specify/templates/spec-template.md ✅ compatible — no change needed.
+  .specify/templates/tasks-template.md ✅ compatible — test-first mandate already stated.
+Follow-up TODOs: None.
+
+----- prior amendment -----
 Version change: 1.2.0 -> 2.0.0
 Modified principles:
   Security Model (section 6) — REMOVED the auto-merge prohibition. The runner MAY merge its own
@@ -97,7 +132,7 @@ Follow-up TODOs: None.
 
 # Spec Queue Runner Constitution
 
-**Version**: 2.0.0 | **Ratified**: 2026-07-25 | **Last Amended**: 2026-07-25
+**Version**: 3.0.0 | **Ratified**: 2026-07-25 | **Last Amended**: 2026-07-25
 **Authors**: Project maintainers
 
 ## 1. Project Purpose
@@ -128,17 +163,26 @@ is away, resuming automatically when Claude Code credits reset. All features MUS
 All implementations MUST conform to the following:
 
 - **Application**: a **.NET console application** (the "tick"), published as a
-  **single-file executable**, installed once and invoked per-instance with its config path
-  as the sole positional argument.
+  **single-file executable for `linux-arm64`**, invoked per-instance with its config path as
+  the sole positional argument.
+- **Runtime**: the tick runs **inside a Docker container**, for blast-radius isolation — a
+  prompt-injected agent with repo write access cannot reach the host filesystem, other repos'
+  clones, or host credentials. The container image bundles the .NET runtime, `git`, `tmux`,
+  and Claude Code. There is **no host .NET or tmux install**; those are image layers. One
+  container per instance keeps instances isolated from each other as well as from the host.
 - **Language/conventions**: C# with standard .NET naming conventions and nullable reference
   types enabled.
 - **Configuration**: **TOML** config files, one per instance, holding exactly one repo pair
   (issues slug + local clone path) plus instance settings. Secrets MUST NOT appear in config.
-- **Secrets**: the GitHub token is a fine-grained PAT referenced from the **macOS keychain**;
-  it is never stored in config, the repo, or environment files committed to the repo.
+- **Secrets**: the GitHub token is a fine-grained PAT provided to the container as a **mounted
+  secret file or Docker secret** — never in config, the image, or the repo. (The macOS
+  Keychain is unreachable from a Linux container and is no longer used.) Claude Code's own
+  claude.ai OAuth credential is minted by a **one-time in-container `/login`** and persisted in
+  a **named Docker volume**, so it survives container rebuilds; it is never baked into the image.
 - **Scheduling**: **launchd** with `StartInterval` (not cron) — launchd runs a missed job on
-  wake, which is essential for a system premised on overnight work. The launchd plist is
-  per-instance.
+  wake, which is essential for a system premised on overnight work. launchd fires the tick by
+  invoking **Docker** (`docker run`/`docker exec`) rather than the binary directly; it is the
+  one remaining host-side touchpoint. The launchd plist is per-instance.
 - **GitHub access**: the **REST API** via a fine-grained PAT; Octokit or raw `HttpClient`,
   whichever has less friction, behind an interface the tests can fake.
 - **Process orchestration**: `git` (worktrees), `tmux` (live sessions), and `claude`
@@ -150,9 +194,11 @@ All implementations MUST conform to the following:
   conversation state lives in Claude Code's session store, referenced by ID from the issue.
   The tick itself is stateless. A database MUST NOT be introduced without a constitution
   amendment.
-- **Portability**: no platform-specific tooling beyond the tmux and launchd touchpoints; the
-  headless path MUST run unchanged on Linux. launchd- and keychain-specific code MUST be
-  isolated behind small seams so a Linux port replaces integration points, not logic.
+- **Portability**: the container is the portability boundary — the whole tick runs on any
+  Docker host, and the image already targets Linux, so there is no separate "Linux port" to
+  maintain. **launchd is the only host-specific touchpoint**; it is isolated behind a small
+  seam so a non-macOS host replaces the trigger (e.g. systemd timer) without touching tick
+  logic. Secret delivery (mounted file / Docker secret) is likewise a seam, not baked in.
 - **Testing**: **xUnit**, per the Spec Kit Testing Constitution below. No Testcontainers,
   no database fixtures — the test doubles are a fake `claude` binary, disposable git fixture
   repos, and a faked GitHub client behind its interface.
@@ -179,6 +225,19 @@ regression, not a style issue.
   item runs there; the worktree persists across ticks, crashes, rate limits, and open live
   sessions, and is removed only after the PR is opened at close. Item collisions MUST be
   inexpressible, not merely locked against.
+- **Workspace trust is pre-seeded, never prompted.** Claude Code gates interactive sessions
+  on per-directory workspace trust, and every item creates a new worktree directory. When the
+  runner creates a worktree it MUST write that directory's trust flag
+  (`projects["<path>"].hasTrustDialogAccepted = true` in Claude Code's config) **before** the
+  first interactive session, so a live session never stalls on an un-answerable trust dialog.
+  This is verified behaviour (probe §3), and it is the mechanism that makes the live channel
+  work unattended; it is not optional.
+- **The claude.ai credential is monitored, not assumed.** claude.ai OAuth logins expire on a
+  schedule. Because an expired credential silently stalls every live session, `doctor` MUST
+  check credential expiry proactively, and expiry MUST surface loudly (the same way auth
+  failures surface in the comment fallback) rather than being discovered at 3am. Re-login is a
+  one-time in-container `/login`; the break-glass path to reach the container for it is host
+  administration (Tailscale + SSH), outside the tick.
 - **Instances never coordinate.** No shared locks, no shared scheduler, no cross-repo
   priority. Credit contention and Remote Control slot contention resolve through the
   existing failure paths (usage-limit revert; comment fallback).

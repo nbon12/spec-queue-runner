@@ -6,6 +6,12 @@ Each decision below resolves an unknown in the plan's Technical Context. The con
 (`.specify/memory/constitution.md`) fixes most of the stack; this document resolves what it
 deliberately left open, plus the environment facts discovered on the target machine.
 
+> **SUPERSEDED IN PART by R15 (2026-07-25 architecture probe).** The runner is now
+> **containerized**, so R1 and R12's "install on the host" framing no longer applies — .NET 10
+> and tmux are **image layers**, not host installs. R4/R6's macOS-Keychain adapter is replaced
+> by a mounted-secret adapter. R14's live-channel unknowns (OQ-3/4/5) are **resolved favorably**.
+> See R15 below and `probe/probe-results.md`.
+
 ## Environment baseline (measured 2026-07-25)
 
 | Tool | Found | Consequence |
@@ -228,3 +234,38 @@ than a path argument — is what binds every invocation to the item's worktree (
 Remote Control with a fresh ID, are Tier 4 questions (OQ-3 through OQ-6 in the spec's
 Assumptions). The plan does not assume an answer; `doctor --probe` establishes it before the
 live-channel work is built.
+
+## R15 — Architecture probe (2026-07-25): containerize; live-channel unknowns resolved
+
+**Decision**: Run the entire tick **inside a Docker container** (one per instance). This was
+not assumed — it was verified end-to-end with a real probe (`probe/`), phone in hand. Full
+record in `probe/probe-results.md`.
+
+**Rationale**: The operator's driving motivation is blast-radius isolation — a prompt-injected
+agent running with an unattended permission mode and repo write access should not be able to
+reach the host filesystem, other instances' clones, or host credentials. Docker's isolation
+model is the operator's preferred boundary (comfortable with it, portable, hard to escape).
+Every objection that made containerization look risky was tested and fell:
+
+| Probe | Result |
+|---|---|
+| In-container claude.ai `/login` | Works (paste-back code flow; no macOS-Keychain dependency — credential lands in `~/.claude` in the container). |
+| Headless `claude -p` | Works; not blocked by workspace trust. |
+| **Workspace trust across worktrees (OQ-3)** | **Not a blocker.** Trust is a per-path boolean `projects["<abs>"].hasTrustDialogAccepted` in Claude Code's config. Pre-seeded worktree launched with no dialog; unseeded control prompted. The runner writes this at `git worktree add` time (FR-012a). |
+| tmux kickoff (OQ-4) | Works, but needs the readiness-probe + retry already specified (one of two blind sends failed). |
+| **Remote Control from container (the headline)** | **Works.** Registered, issued a `claude.ai/code` URL, pushed to the operator's phone, and the operator drove it bidirectionally from the mobile app. Undocumented question answered yes. |
+| **Session resumption (OQ-5)** | **Best case.** Killed the session, `--resume <uuid> --remote-control` restored the full transcript and re-registered Remote Control on the **same** URL; the phone reconnected and got a context-aware answer with no re-run. Validates FR-024/FR-047. |
+| Server mode `--spawn worktree` (OQ-6-adjacent) | **Does not fit** — CC-owned per-connection worktrees can't be shared with the headless path. No FRs deleted; per-item `claude --remote-control` in the item's own worktree is correct. |
+
+**Consequences** (folded into constitution v3.0.0 and the spec):
+- .NET 10 and tmux are **image layers**, not host installs (T001/T002 rewritten).
+- GitHub PAT → **mounted secret file / Docker secret**, not the macOS Keychain (FR-052; the
+  `SecretFileStore` adapter replaces the Keychain adapter).
+- Claude Code auth → one-time in-container `/login` in a **named volume**; `doctor` checks its
+  **expiry** proactively because an expired login silently stalls live sessions (FR-052b).
+- Record the **conversation UUID** (not the Remote Control session id) as the resume id (FR-022).
+- launchd stays on the host but fires the tick via **Docker**, and is the only host touchpoint.
+
+**Alternatives considered**: host-native run (rejected — no isolation, the whole point);
+`--sandbox`/sandboxing flag instead of Docker (rejected by the operator — would re-create what
+Docker already does, and Docker's boundary is the one they trust and get portability from).

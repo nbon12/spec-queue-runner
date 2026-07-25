@@ -19,15 +19,19 @@ perform at most one unit of work → exit. This is what launchd invokes.
 
 Verifies prerequisites without touching the queue. Prints one pass/fail line per check:
 
+These run **inside the container** (where the tick lives), so they check the container's own
+toolchain, not the host's.
+
 | Check | Failure means |
 |---|---|
 | Config parses and validates | fix the TOML (exit 1) |
-| .NET runtime version | install .NET 10 |
-| `git` present, version ≥ 2.5 | worktree support missing |
-| `tmux` present | `brew install tmux` — currently missing (research R12) |
-| `claude` present and on PATH | install Claude Code |
-| Keychain entry resolvable | PAT not stored (see quickstart) |
+| .NET runtime present (image layer) | rebuild the image |
+| `git` present, version ≥ 2.5 | worktree support missing from image |
+| `tmux` present | missing from image |
+| `claude` present and on PATH | missing from image |
+| GitHub PAT secret file readable at configured path | mount the secret (see quickstart) |
 | PAT scope covers issues/contents/PRs | re-issue the fine-grained token |
+| **claude.ai OAuth present and not near expiry** | run in-container `/login` — **loud**, expiry silently stalls live sessions (FR-052b) |
 | Operator login resolves to a numeric ID | allowlist cannot be enforced — **fail closed** |
 | Clone path exists and is a git repo | fix `path` |
 | Main branch is protected | review gate is not structural (§6, FR-056) |
@@ -54,7 +58,7 @@ Prints version and build identifier.
 |---|---|---|
 | 0 | Work done, nothing to do, or lock held | normal |
 | 1 | Configuration invalid or unreadable | operator must fix; logged loudly |
-| 2 | Environment/prerequisite failure (missing tmux, unresolvable keychain entry, operator login unresolvable) | operator must fix |
+| 2 | Environment/prerequisite failure (missing image tooling, unreadable PAT secret, expired claude.ai login, operator login unresolvable) | operator must fix |
 | 3 | Unexpected internal error | investigate log |
 
 Exit 0 covers "lock held" deliberately: overlapping ticks are normal operation, not an error

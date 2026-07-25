@@ -35,10 +35,12 @@ review_prompt = ".specify/prompts/code-review.md"   # repo-relative; NEVER sourc
 auto_merge   = true    # runner merges its own PR after review passes with no blocking finding
 spend_cap    = 100     # USD; estimated one-off or recurring spend above this always blocks
 
-# ── Secrets: referenced, never stored ──
-[keychain]
-service         = "spec-runner"
-account         = "nicholas/homelab"      # the PAT lives here, not in this file
+# ── Secrets: mounted into the container, never stored here ──
+[secret]
+github_pat_file = "/run/secrets/github_pat"   # mounted secret file or Docker secret; NOT in this file
+# (was the macOS Keychain in earlier revisions — unreachable from a Linux container.
+#  Claude Code's own claude.ai OAuth is a one-time in-container /login, persisted in a
+#  named Docker volume mounted at ~/.claude — not configured here.)
 
 # ── Paths ──
 log             = "~/.local/state/spec-runner/homelab.log"
@@ -65,7 +67,7 @@ protected_paths = ["infra/**", "**/migrations/**"]
 | `review_prompt` | repo-relative path; file exists and is non-empty on the item's branch | exit 1 |
 | `auto_merge` | boolean | exit 1 |
 | `spend_cap` | > 0 when `auto_merge` is true | exit 1 |
-| `[keychain]` | entry resolvable via `security find-generic-password` | exit 2 |
+| `[secret].github_pat_file` | file exists and is readable inside the container | exit 2 |
 | `log`, `lock` | parent directory exists or is creatable | exit 1 |
 
 **Fail-closed rule**: if `operator_login` cannot be resolved to a numeric ID, the tick performs
@@ -75,7 +77,7 @@ the rename/re-registration impersonation path the numeric ID exists to close (re
 ## Prohibited content
 
 The config file MUST NOT contain a token, password, or any other secret. Secrets are referenced
-from the macOS keychain by service/account only (constitution §2, §6, FR-052). A config
+as a mounted secret file / Docker secret by path only (constitution §2, §6, FR-052). A config
 containing something that looks like a credential is a validation failure, not a warning.
 
 ## Cross-instance rule

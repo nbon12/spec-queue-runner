@@ -7,31 +7,38 @@ this is the run-and-validate guide.
 
 ## Prerequisites
 
-Two are **missing on this machine** as of 2026-07-25 (see `research.md`):
+The **host** needs only Docker (verified `27.3.1` present, 2026-07-25). Everything else — .NET
+10, git, tmux, Claude Code — lives in the image, so there are no host toolchain installs
+(research R15).
 
 ```bash
-# .NET 10 SDK — only 8.0.404 and 9.0.303 are installed (research R1)
-#   install from https://dotnet.microsoft.com/download  (or: brew install --cask dotnet-sdk)
-dotnet --list-sdks          # expect a 10.x entry
-
-# tmux — not installed; the live channel cannot work without it (research R12)
-brew install tmux
-tmux -V
+docker --version            # any recent Docker; Desktop on macOS is fine
+docker build -t spec-runner .   # builds the runner image (bundles the .NET runtime + tooling)
 ```
-
-Already present and verified: `git` 2.39.5, `claude` 2.1.220, `gh` 2.76.2 (unused by design),
-`/usr/bin/security`.
 
 ## One-time setup
 
-### 1. Store the PAT in the keychain
+### 1. Provide the PAT as a mounted secret
 
 Create a **fine-grained** PAT scoped to exactly one repository, with Issues, Contents, and
-Pull requests permissions only (constitution §6, FR-052):
+Pull requests permissions only (constitution §6, FR-052). Deliver it to the container as a
+mounted secret file (or a Docker secret) — never in config, the image, or the repo:
 
 ```bash
-security add-generic-password -s spec-runner -a "nicholas/homelab" -w
-# paste the token at the prompt — it never touches the config file or the repo
+# e.g. write it to a host file with tight perms, mounted read-only into the container
+umask 077 && printf '%s' '<your-fine-grained-PAT>' > ~/.config/spec-runner/homelab.pat
+# docker run ... -v ~/.config/spec-runner/homelab.pat:/run/secrets/github_pat:ro ...
+```
+
+### 1b. Log Claude Code in, inside the container (one time)
+
+Remote Control needs a full-scope claude.ai OAuth session, which only an interactive login
+produces — a setup token or API key will not work (verified: probe §1, §4). Do it once; the
+credential persists in a named volume across rebuilds:
+
+```bash
+docker run -it -v spec-runner-homelab-claude:/home/runner/.claude spec-runner \
+  bash -lc 'claude'     # then /login (paste-back code flow works from any device), /exit
 ```
 
 ### 2. Protect the main branch

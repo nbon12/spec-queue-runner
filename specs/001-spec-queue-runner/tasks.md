@@ -33,11 +33,12 @@ Single project, ports-and-adapters (see plan.md "Structure Decision"):
 **Purpose**: Install everything the build and the runtime depend on, then create the skeleton.
 Two toolchain prerequisites are **missing on this machine** (verified 2026-07-25).
 
-### Toolchain installs
+### Container image (the runtime — replaces host installs; see probe/probe-results.md)
 
-- [ ] T001 Install the .NET 10 SDK and verify `dotnet --list-sdks` shows a 10.x entry (research R1 — only 8.0.404 and 9.0.303 are present today, both leaving support inside this project's life)
-- [ ] T002 [P] Install tmux via `brew install tmux` and verify with `tmux -V` (research R12 — currently missing; the live channel is unimplementable without it)
-- [ ] T003 [P] Verify the `claude` CLI is installed and resolvable at its real path (2.1.220 found); record that the runner must invoke the binary directly, never the operator's shell alias which carries `--dangerously-skip-permissions` (research R6)
+- [ ] T001 Author the runner `Dockerfile` (base the probe image at `probe/Dockerfile`): Debian, non-root user, bundling git, tmux, ripgrep, and Claude Code. The tick runs here, not on the host — there is NO host .NET or tmux install (constitution §2, FR-052a)
+- [ ] T002 [P] Add the .NET 10 runtime to the image and confirm a `linux-arm64` single-file publish runs inside the container (`dotnet --info` in-container shows 10.x); the host needs only Docker
+- [ ] T003 [P] Verify `claude --version` in the container (2.1.220 confirmed by probe) and that invocations use the real binary with an explicit environment — never a shell alias carrying `--dangerously-skip-permissions` (research R6)
+- [ ] T003a [P] Wire credential delivery: GitHub PAT as a mounted secret file / Docker secret (`[secret].github_pat_file`), and Claude Code's `~/.claude` as a named volume seeded by a one-time in-container `/login` (FR-052/052b; probe §1 confirmed in-container login works)
 
 ### Project skeleton
 
@@ -104,7 +105,7 @@ user story can be built or trusted until this phase is complete.
 
 - [ ] T034 Define ports `IGitHubClient`, `IProcessRunner`, `ISecretStore`, `IClock`, `IWorktreeReader` in `src/SpecRunner/Ports/`
 - [ ] T035 Implement `ProcessRunner` in `src/SpecRunner/Adapters/ProcessRunner.cs` using `ArgumentList`, concurrent stdout/stderr draining, and an explicitly constructed environment (research R6)
-- [ ] T036 [P] Implement `KeychainSecretStore` in `src/SpecRunner/Adapters/Keychain/KeychainSecretStore.cs` shelling out to `/usr/bin/security`
+- [ ] T036 [P] Implement `SecretFileStore` in `src/SpecRunner/Adapters/Secrets/SecretFileStore.cs` reading the GitHub PAT from the mounted secret file at `[secret].github_pat_file` (replaces the macOS-Keychain adapter — the container is Linux; §2, FR-052)
 - [ ] T037 [P] Implement `GitWorktrees` in `src/SpecRunner/Adapters/Git/GitWorktrees.cs` wrapping `git worktree add/remove/list/prune`
 - [ ] T038 [P] Implement `TmuxSessions` in `src/SpecRunner/Adapters/Tmux/TmuxSessions.cs` wrapping `new-session -d`, `send-keys`, `kill-session`, and pane-content readiness probing
 - [ ] T039 Implement `ClaudeInvoker` in `src/SpecRunner/Adapters/Claude/ClaudeInvoker.cs` for headless `-p --output-format json --permission-mode <configured>` with the item's worktree as cwd
@@ -125,12 +126,12 @@ user story can be built or trusted until this phase is complete.
 - [ ] T048 Implement `DoctorCommand` in `src/SpecRunner/Doctor/DoctorCommand.cs` with every prerequisite check from `contracts/cli-commands.md`, including tmux presence and main-branch protection
 - [ ] T049 Implement the Tier 3 injection-canary harness in `tests/SpecRunner.PropertyTests/InjectionCanaryTests.cs` asserting a seeded non-operator canary string appears in no recorded invocation's argv or stdin across every scenario in the suite
 
-### Tier 4 live probes — gate for User Story 3
+### Tier 4 live probes — ALREADY RESOLVED manually (see probe/probe-results.md, 2026-07-25)
 
-- [ ] T050 Implement the four probes in `src/SpecRunner/Doctor/Probes/` (worktree trust carry-over, tmux kickoff delivery, session resumption under Remote Control, two concurrent Remote Control sessions)
-- [ ] T051 Run `spec-runner doctor --probe` with phone in hand and record results in `specs/001-spec-queue-runner/research.md` (constitution §10 requires these resolved before live-channel queue logic is built; worktree trust is a potential blocker, not a wrinkle)
+- [x] T050 **Resolved by the manual probe.** All four questions answered favorably in a container: workspace trust is a per-directory boolean the runner pre-seeds (not a carry-over problem); tmux kickoff works with retry; session resumption restores transcript + re-registers Remote Control on the same URL; the two-concurrent-sessions question is moot for v1 (one live session per instance, FR-025). Fold the `doctor --probe` command in as a re-runnable regression of these, but the gating answers exist.
+- [ ] T051 Implement `doctor --probe` in `src/SpecRunner/Doctor/Probes/` as a re-runnable version of the manual checklist (so the answers can be re-verified on a new host/image), citing `probe/probe-results.md` as the baseline
 
-**Checkpoint**: Foundation ready. Tier 1 green, lock and canary tests green, probes answered.
+**Checkpoint**: Foundation ready. Tier 1 green, lock and canary tests green, probe answers recorded.
 
 ---
 
@@ -152,6 +153,7 @@ exists, the issue is closed, and the log shows a rate-limit-triggered retry that
 ### Implementation for User Story 1
 
 - [ ] T056 [US1] Implement worktree lifecycle in `src/SpecRunner/Ticking/WorktreeLifecycle.cs`: lazy creation via `git worktree add <root>/<nr> work/<nr>`, persistence across ticks, removal after the PR opens (FR-012/014)
+- [ ] T056a [US1] On worktree creation, pre-seed workspace trust in `src/SpecRunner/Ticking/WorktreeLifecycle.cs`: write `projects["<worktree-path>"].hasTrustDialogAccepted = true` into Claude Code's config before any interactive session — otherwise the live session stalls on a trust dialog (FR-012a; validated by probe §3)
 - [ ] T057 [US1] Implement the `Tick` orchestrator in `src/SpecRunner/Ticking/Tick.cs`: lock → operator identity → collect replies → reap → at most one unit of work → exit (FR-002/003/009)
 - [ ] T058 [US1] Implement work selection and `status/in-progress` labelling before any Claude invocation in `src/SpecRunner/Ticking/Tick.cs` (FR-009/011)
 - [ ] T059 [US1] Implement `WorkRunner` execution-stage advance (plan → tasks → analyze → implement) in `src/SpecRunner/Ticking/WorkRunner.cs`, folding analyze recommendations in directly and checkpointing at each predicate (FR-020/030)
@@ -322,7 +324,8 @@ the discrepancy, names a side, and leaves both spec and code byte-for-byte uncha
 
 - [ ] T104 [P] Implement recurrence successor filing from the `Recurring:` body line in `src/SpecRunner/Ticking/Recurrence.cs` (FR-042)
 - [ ] T105 [P] Implement one-way reporting guards in `src/SpecRunner/Ticking/DecisionReporter.cs`: never ask approval of a completed decision, never notify outside GitHub and Remote Control (FR-048/049)
-- [ ] T106 [P] Implement `install`/`uninstall` launchd commands in `src/SpecRunner/Doctor/LaunchdInstaller.cs` writing a per-instance plist (label `com.spec-runner.<slug>`, `StartInterval` 300, `RunAtLoad` true)
+- [ ] T106 [P] Implement `install`/`uninstall` launchd commands in `src/SpecRunner/Doctor/LaunchdInstaller.cs` writing a per-instance plist (label `com.spec-runner.<slug>`, `StartInterval` 300, `RunAtLoad` true). The plist's program invokes **Docker** (`docker run`/`docker exec` against the instance's container) — not a host binary — passing the config path, mounting the PAT secret and the `~/.claude` named volume (§2, FR-052a)
+- [ ] T106a [P] Provide the container run recipe (compose or a documented `docker run`) in `deploy/`: per-instance container, secret mount, named `~/.claude` volume, worktrees volume; referenced by the launchd plist
 - [ ] T107 [P] Configure single-file publish in `src/SpecRunner/SpecRunner.csproj` and document the install step in `specs/001-spec-queue-runner/quickstart.md`
 - [ ] T108 Run the full Tier 1–3 suite and confirm all green with zero credits spent and no network access
 - [ ] T109 Walk the seven validation scenarios in `specs/001-spec-queue-runner/quickstart.md`, including the two manual ones (Live, Patient)

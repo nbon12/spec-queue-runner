@@ -22,8 +22,9 @@ in CI with no credits spent (R11).
 
 ## Technical Context
 
-**Language/Version**: C# on **.NET 10** (LTS). Note: **not installed on this machine** — only
-SDKs 8.0.404 and 9.0.303 are present. Installing it is an explicit setup task (research R1).
+**Language/Version**: C# on **.NET 10** (LTS), published for **`linux-arm64`** and run inside a
+Docker container. The .NET runtime is an **image layer**, not a host install — the host needs
+only Docker (research R1, R15).
 
 **Primary Dependencies**: Tomlyn (config), Octokit.net (GitHub, behind a first-party port),
 Serilog + rolling file sink (instance log), xUnit (tests). Deliberately small — the constitution
@@ -36,8 +37,9 @@ requires justifying each one.
 property families (crash-convergence, injection canary); manual live probes via `doctor --probe`.
 Tiers 1–3 spend zero credits and touch no network.
 
-**Target Platform**: macOS (launchd, keychain, tmux). The headless path must run unchanged on
-Linux; platform-specific surface is confined to individual adapters.
+**Target Platform**: a **Docker container** (Debian/Linux, arm64) bundling git, tmux, and Claude
+Code. The host runs only Docker + launchd; launchd fires each tick via `docker run`/`docker
+exec`. Verified end-to-end by the 2026-07-25 probe (research R15, `probe/probe-results.md`).
 
 **Project Type**: Single-project CLI — a single-file-published console binary installed once and
 invoked per-instance with its config path.
@@ -78,7 +80,7 @@ Gates derived from `.specify/memory/constitution.md` v1.1.0.
 | 15 | No inbound network surface | §5 | ✅ | ✅ Poll-only; no webhooks |
 | 16 | Single-operator allowlist, authenticated-author verified | §6, FR-005 | ✅ | ✅ Numeric user ID, fail-closed (R5) |
 | 17 | Untrusted content cannot redirect a run | §6, FR-006 | ✅ | ✅ Delimited answer regions; Tier 3 canary |
-| 18 | Minimal-scope PAT in keychain, never in config | §6 | ✅ | ✅ Config schema forbids secrets |
+| 18 | Minimal-scope PAT as mounted secret, never in config | §6, FR-052 | ✅ | ✅ Config holds a secret-file path only; schema forbids inline secrets |
 | 19 | Branch protection assumed; merge gate configurable | §6, FR-056, FR-033b | ✅ | ✅ `doctor` checks protection; auto-merge gated on review passing |
 | 27 | Auto-merged work produces a digest; spend over threshold blocks | §3, §6, FR-033c/d | ✅ | ✅ Digest before merge; cost added to always-block list |
 | 28 | Review runs in a fresh session; checks cross-spec drift | §9, FR-034a1/c1 | ✅ | ✅ No session resumption; coverage-bounded drift check |
@@ -154,7 +156,7 @@ src/SpecRunner/
 │   ├── Git/GitWorktrees.cs             # add/remove/list/prune
 │   ├── Tmux/TmuxSessions.cs            # new-session/send-keys/kill-session
 │   ├── Claude/ClaudeInvoker.cs         # ArgumentList, concurrent drain
-│   └── Keychain/KeychainSecretStore.cs # /usr/bin/security (macOS-only seam)
+│   └── Secrets/SecretFileStore.cs      # reads PAT from mounted secret file (R15)
 ├── Ticking/
 │   ├── Tick.cs                 # the orchestrator
 │   ├── InstanceLock.cs         # FileShare.None
@@ -182,9 +184,9 @@ tests/
 it is what the constitution's testability rules require. `Domain/` is pure so Tier 1 can drive
 every stage-derivation and rate-limit case from `InlineData` fixtures with no environment.
 `Ports/` exists so Tier 2 can substitute an in-memory GitHub while still exercising *real* git
-and tmux through their adapters. `Adapters/Keychain` and the tmux calls are the only
-macOS-specific surface, which is what keeps the Linux-portability rule (§2) honest — a port
-replaces adapters, not logic.
+and tmux through their adapters. The whole tick runs inside a Linux container (R15), so there is
+no macOS-specific surface left in the tick itself; `launchd` (host-side, fires the container)
+and secret delivery (mounted file) are the only host touchpoints, each behind a small seam.
 
 ## Complexity Tracking
 
