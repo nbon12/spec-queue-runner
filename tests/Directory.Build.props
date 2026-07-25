@@ -7,5 +7,7 @@
     <IsPackable>false</IsPackable>
     <!-- Test fixtures deliberately exercise nullable edge cases; don't fail the build on them. -->
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <!-- Underscored test method names are the xUnit convention; CA1707 is noise here. -->
+    <NoWarn>$(NoWarn);CA1707</NoWarn>
   </PropertyGroup>
 </Project>
