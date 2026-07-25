@@ -271,3 +271,21 @@ Every objection that made containerization look risky was tested and fell:
 **Alternatives considered**: host-native run (rejected — no isolation, the whole point);
 `--sandbox`/sandboxing flag instead of Docker (rejected by the operator — would re-create what
 Docker already does, and Docker's boundary is the one they trust and get portability from).
+
+## R16 — Headless SpecKit slash-command dispatch (T039a): WORKS, no workaround
+
+**Decision**: The runner invokes stage commands as `claude -p "/speckit.<stage> <args>"`.
+Verified in the authed container (2026-07-25):
+- A custom project slash command (`.claude/commands/probe-hello.md`) dispatched under `-p` and
+  returned its exact token — so custom slash commands DO fire in print mode.
+- `$ARGUMENTS` substitution works under `-p`: `claude -p "/probe-args hello-from-runner-42"`
+  returned `ARGS=hello-from-runner-42`.
+
+**Consequence**: `StageCommand` builds the slash-command string; the inline-markdown fallback
+(read `.claude/commands/*.md`, substitute placeholders, pass as prompt) is NOT needed. The seam
+still exists so `WorkRunner` doesn't care, but its live implementation is the slash path.
+
+**Caveat**: the `{SCRIPT}` frontmatter placeholder substitution (distinct from `$ARGUMENTS`) was
+not separately exercised here; the SpecKit commands that use it also run their own
+`check-prerequisites.sh`, which the runner already invokes. Confirm during the first real
+`/speckit.specify` headless run.
