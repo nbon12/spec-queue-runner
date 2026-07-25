@@ -32,6 +32,7 @@ public static class CommandDispatcher
         {
             "version" => Version(),
             "demo" => Demo(args),
+            "run-stage" => RunStage(args),
             "tick" or "doctor" => NotYetImplemented(args[0]),
             _ => Unknown(args[0]),
         };
@@ -61,6 +62,27 @@ public static class CommandDispatcher
         var version = typeof(CommandDispatcher).Assembly.GetName().Version?.ToString() ?? "0.0.0";
         Console.WriteLine($"spec-runner {version}");
         return (int)ExitCode.Ok;
+    }
+
+    private static int RunStage(string[] args)
+    {
+        if (args.Length < 6 || !int.TryParse(args[4], out var number))
+        {
+            Console.Error.WriteLine(
+                "usage: spec-runner run-stage <clone> <worktrees-root> <claude-config> <item#> <prompt>");
+            return (int)ExitCode.ConfigInvalid;
+        }
+
+        try
+        {
+            return RunStageCommand.RunAsync(args[1], args[2], args[3], number, args[5])
+                .GetAwaiter().GetResult();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"run-stage failed: {ex.Message}");
+            return (int)ExitCode.InternalError;
+        }
     }
 
     private static int NotYetImplemented(string command)
