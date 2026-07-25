@@ -38,6 +38,13 @@ public class LiveSessionTests
     {
         Assert.Null(LiveSession.RecordedId(["just a human comment", "another"]));
     }
+
+    [Fact]
+    public void Project_dir_name_encodes_the_worktree_path_like_claude_code()
+    {
+        // Matches the probe transcript path: separators become dashes, leading slash included.
+        Assert.Equal("-home-runner-work-42", LiveSession.ProjectDirName("/home/runner/work/42"));
+    }
 }
 
 public class AuditSelectionTests

@@ -11,6 +11,17 @@ public static class LiveSession
     public static string TmuxName(int itemNumber) => $"spec-runner-{itemNumber}";
 
     /// <summary>
+    /// The directory Claude Code stores a worktree's conversations under, relative to
+    /// <c>~/.claude/projects</c>. Claude Code encodes the absolute working directory by replacing
+    /// path separators with dashes (e.g. <c>/home/runner/work/42</c> → <c>-home-runner-work-42</c>),
+    /// so the runner can find the conversation id by reading the newest transcript in that folder.
+    /// (Encoding matches the probe transcript path; re-confirm in-container if a future Claude Code
+    /// changes it — an unreadable folder just yields no id, which fails safe to the fallback.)
+    /// </summary>
+    public static string ProjectDirName(string worktreePath) =>
+        worktreePath.Replace('/', '-');
+
+    /// <summary>
     /// The kickoff scoped to resolving this item's open questions only (FR-021). For an execution
     /// block it additionally bars continuing implementation.
     /// </summary>

@@ -20,8 +20,17 @@ public sealed class Tick(
     InstanceConfig config,
     IGitHubClient github,
     IProcessRunner processes,
-    TextWriter log)
+    TextWriter log,
+    IClaudeSessionStore? sessions = null,
+    Func<TimeOnly>? clock = null)
 {
+    // Real collaborators by default; tests inject a fake store and a fixed clock. The store reads
+    // Claude Code's on-disk transcripts; the clock drives the waking-hours gate (FR-021/026).
+    private readonly IClaudeSessionStore _sessions =
+        sessions ?? new ClaudeSessionStore(DefaultProjectsRoot(config));
+    private readonly Func<TimeOnly> _now =
+        clock ?? (() => TimeOnly.FromDateTime(DateTime.Now));
+
     public async Task<int> RunAsync(CancellationToken ct = default)
     {
         var lockPath = string.IsNullOrEmpty(config.Lock)
@@ -41,6 +50,15 @@ public sealed class Tick(
         {
             log.WriteLine($"could not resolve operator '{config.OperatorLogin}' — failing closed.");
             return (int)Cli.ExitCode.EnvironmentFailure;
+        }
+
+        // Live sweep (FR-057): before taking new work, tend any open live session — resume it if
+        // its process died, or reap it and advance the item if the operator resolved the block.
+        // A healthy, still-blocked session is left alone; other ready work may still proceed
+        // alongside it (SC-003), so the sweep only consumes the tick when it acts.
+        if (await SweepLiveSessionsAsync(op, ct).ConfigureAwait(false))
+        {
+            return (int)Cli.ExitCode.Ok;
         }
 
         // Work selection: lowest-numbered open status/ready issue (FR-009). An item is skipped if
@@ -116,7 +134,7 @@ public sealed class Tick(
                 await RunReviewAsync(item, worktreePath, ct).ConfigureAwait(false);
                 break;
             case Stage.Clarify:
-                await RunClarifyFallbackAsync(item, worktreePath, ct).ConfigureAwait(false);
+                await RunClarifyBlockAsync(item, worktreePath, isExecutionBlock: false, ct).ConfigureAwait(false);
                 break;
             default:
                 await RunSpecKitStageAsync(item, stage.Value, worktreePath, ct).ConfigureAwait(false);
@@ -124,6 +142,161 @@ public sealed class Tick(
         }
 
         return (int)Cli.ExitCode.Ok;
+    }
+
+    private static string DefaultProjectsRoot(InstanceConfig config)
+    {
+        // Claude Code keeps transcripts under <home>/.claude/projects. The config points at the
+        // <home>/.claude.json file, so its directory is the home the projects folder sits beside.
+        var configPath = string.IsNullOrEmpty(config.ClaudeConfigPath)
+            ? System.IO.Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude.json")
+            : config.ClaudeConfigPath;
+        var home = System.IO.Path.GetDirectoryName(configPath) ?? ".";
+        return System.IO.Path.Combine(home, ".claude", "projects");
+    }
+
+    // A block (FR-031/018): inside waking hours the operator gets a live session on their phone
+    // (FR-021); outside them, the comment fallback holds until morning (FR-026/019). The choice is
+    // the only difference — both channels resolve the same open questions.
+    private async Task RunClarifyBlockAsync(
+        WorkItem item, string worktreePath, bool isExecutionBlock, CancellationToken ct)
+    {
+        var waking = WakingHours.Parse(config.WakingHours);
+        if (waking.Contains(_now()))
+        {
+            await RunLiveSessionAsync(item, worktreePath, isExecutionBlock, ct).ConfigureAwait(false);
+        }
+        else
+        {
+            log.WriteLine("block outside waking hours — using the comment fallback (FR-026).");
+            await RunClarifyFallbackAsync(item, worktreePath, ct).ConfigureAwait(false);
+        }
+    }
+
+    // Spawn the live session (FR-021/022): a detached tmux session in the item's own worktree,
+    // Claude launched inside it (registering Remote Control off the full-scope OAuth), the kickoff
+    // delivered once the session is ready (FR-021a — never blind), then the resumable conversation
+    // id recorded on the issue and the item labelled live. At most one live session per instance
+    // (FR-025): if one already exists, this item waits its turn via the fallback.
+    private async Task RunLiveSessionAsync(
+        WorkItem item, string worktreePath, bool isExecutionBlock, CancellationToken ct)
+    {
+        var tmux = new Adapters.Tmux.TmuxSessions(processes);
+
+        // FR-025: only one live session at a time. Another instance's/item's session in flight ⇒
+        // treat as an establishment failure and fall back (FR-028), so we never contend.
+        var mine = LiveSession.TmuxName(item.Number);
+        var already = await github.ListOpenIssuesWithLabelAsync("status/live", ct).ConfigureAwait(false);
+        if (already.Any(i => i.Number != item.Number))
+        {
+            log.WriteLine("another live session is open — falling back for this item (FR-025).");
+            await RunClarifyFallbackAsync(item, worktreePath, ct).ConfigureAwait(false);
+            return;
+        }
+
+        await tmux.NewDetachedAsync(mine, worktreePath, ct).ConfigureAwait(false);
+        await tmux.SendKeysAsync(mine, "claude", ct).ConfigureAwait(false);
+
+        // Readiness = Claude has written its transcript (the conversation exists). Poll for it
+        // rather than sending the kickoff blind (FR-021a). Bounded; if it never appears we reap and
+        // fall back rather than hang.
+        var sessionId = await PollForConversationIdAsync(worktreePath, ct).ConfigureAwait(false);
+        if (sessionId is null)
+        {
+            log.WriteLine("live session did not initialize — reaping and falling back.");
+            await tmux.KillSessionAsync(mine, ct).ConfigureAwait(false);
+            await RunClarifyFallbackAsync(item, worktreePath, ct).ConfigureAwait(false);
+            return;
+        }
+
+        await tmux.SendKeysAsync(mine, LiveSession.Kickoff(item.Number, isExecutionBlock), ct)
+            .ConfigureAwait(false);
+
+        // Record the resumable id and flip to live — the only dialogue artifact the issue gets
+        // while the live path is in use (FR-022).
+        var bodies = await github.GetCommentBodiesAsync(item.Number, ct).ConfigureAwait(false);
+        if (LiveSession.RecordedId(bodies) is null)
+        {
+            await github.AddCommentAsync(item.Number, LiveSession.SessionComment(sessionId), ct)
+                .ConfigureAwait(false);
+        }
+
+        await github.AddLabelsAsync(item.Number, ["stage/clarify", "status/live"], ct).ConfigureAwait(false);
+        await github.RemoveLabelAsync(item.Number, "status/ready", ct).ConfigureAwait(false);
+        log.WriteLine($"live session {sessionId} open for #{item.Number}; awaiting the operator.");
+    }
+
+    private async Task<string?> PollForConversationIdAsync(string worktreePath, CancellationToken ct)
+    {
+        const int attempts = 30;
+        for (var i = 0; i < attempts; i++)
+        {
+            var id = _sessions.NewestConversationId(worktreePath);
+            if (id is not null)
+            {
+                return id;
+            }
+
+            await Task.Delay(TimeSpan.FromSeconds(1), ct).ConfigureAwait(false);
+        }
+
+        return null;
+    }
+
+    // Tend open live sessions (FR-047/024). Returns true when the sweep did the tick's one unit of
+    // work. Resolution is read from the worktree, not a chat scrape: once the operator has driven
+    // the session to write its answers (markers gone), the block is resolved — reap and re-ready.
+    // A session whose process died is resumed by conversation id on the same URL; a healthy,
+    // still-blocked session is left running so other work can proceed alongside it (SC-003).
+    private async Task<bool> SweepLiveSessionsAsync(OperatorIdentity op, CancellationToken ct)
+    {
+        var live = await github.ListOpenIssuesWithLabelAsync("status/live", ct).ConfigureAwait(false);
+        var item = live.FirstOrDefault(op.IsOperator);
+        if (item is null)
+        {
+            return false;
+        }
+
+        var worktrees = new WorktreeLifecycle(
+            processes, config.Path, config.WorktreesRoot, ResolveClaudeConfig(), config.BaseBranch);
+        var worktreePath = await worktrees.EnsureAsync(item.Number, ct).ConfigureAwait(false);
+        var tmux = new Adapters.Tmux.TmuxSessions(processes);
+        var session = LiveSession.TmuxName(item.Number);
+
+        // Resolved? The clarify exit predicate is markers-cleared; if the session wrote the answers
+        // into the spec, derivation no longer lands on Clarify.
+        var specDir = FindSpecDir(worktreePath);
+        var resolved = specDir is null || MarkerCount(specDir) == 0;
+        if (resolved)
+        {
+            await tmux.KillSessionAsync(session, ct).ConfigureAwait(false);
+            await github.AddCommentAsync(item.Number,
+                $"<!-- spec-runner:v1 kind=live-resolved id=live-done-{item.Number} -->\nLive session resolved; resuming the pipeline.",
+                ct).ConfigureAwait(false);
+            await github.RemoveLabelAsync(item.Number, "status/live", ct).ConfigureAwait(false);
+            await github.AddLabelsAsync(item.Number, ["status/ready"], ct).ConfigureAwait(false);
+            log.WriteLine($"live session for #{item.Number} resolved — reaped and re-readied.");
+            return true;
+        }
+
+        // Still blocked: resume the conversation if its tmux session is gone (FR-047). Same id ⇒
+        // same Remote Control URL, no re-ask, no duplicate push.
+        if (!await tmux.HasSessionAsync(session, ct).ConfigureAwait(false))
+        {
+            var bodies = await github.GetCommentBodiesAsync(item.Number, ct).ConfigureAwait(false);
+            var id = LiveSession.RecordedId(bodies);
+            if (id is not null)
+            {
+                await tmux.NewDetachedAsync(session, worktreePath, ct).ConfigureAwait(false);
+                await tmux.SendKeysAsync(session, $"claude --resume {id}", ct).ConfigureAwait(false);
+                log.WriteLine($"resumed live session {id} for #{item.Number} on the same URL.");
+                return true;
+            }
+        }
+
+        log.WriteLine($"live session for #{item.Number} healthy and unresolved — leaving it.");
+        return false;
     }
 
     // Clarify blocks (FR-018). Without a live channel this is the comment fallback (FR-019/027):
