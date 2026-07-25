@@ -26,9 +26,15 @@ public interface IGitHubClient
     /// <summary>All comment bodies on an issue — used to scan for the runner's own markers (R10).</summary>
     Task<IReadOnlyList<string>> GetCommentBodiesAsync(int number, CancellationToken ct = default);
 
-    /// <summary>Open a PR from <paramref name="head"/> into <paramref name="baseBranch"/>; returns its URL.</summary>
-    Task<string> CreatePullRequestAsync(
+    /// <summary>Open a PR from <paramref name="head"/> into <paramref name="baseBranch"/>.</summary>
+    Task<PullRequestRef> CreatePullRequestAsync(
         string title, string body, string head, string baseBranch, CancellationToken ct = default);
+
+    /// <summary>Merge a PR (the operator's gate is delegated to the runner when auto-merge is on, FR-033b).</summary>
+    Task MergePullRequestAsync(int number, CancellationToken ct = default);
 
     Task CloseIssueAsync(int number, CancellationToken ct = default);
 }
+
+/// <summary>An opened pull request: its number (for merge) and URL (for links).</summary>
+public sealed record PullRequestRef(int Number, string Url);

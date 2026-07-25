@@ -12,9 +12,10 @@ public sealed class InMemoryGitHubClient : IGitHubClient
     private readonly Dictionary<string, long> _users = new(StringComparer.Ordinal);
     private readonly Dictionary<int, MutableIssue> _issues = new();
 
-    public sealed record OpenedPr(string Title, string Head, string BaseBranch);
+    public sealed record OpenedPr(int Number, string Title, string Head, string BaseBranch);
 
     public List<OpenedPr> OpenedPrs { get; } = [];
+    public List<int> MergedPrs { get; } = [];
 
     public void AddUser(string login, long id) => _users[login] = id;
 
@@ -81,11 +82,18 @@ public sealed class InMemoryGitHubClient : IGitHubClient
     public Task<IReadOnlyList<string>> GetCommentBodiesAsync(int number, CancellationToken ct = default) =>
         Task.FromResult<IReadOnlyList<string>>(_issues[number].Comments);
 
-    public Task<string> CreatePullRequestAsync(
+    public Task<PullRequestRef> CreatePullRequestAsync(
         string title, string body, string head, string baseBranch, CancellationToken ct = default)
     {
-        OpenedPrs.Add(new OpenedPr(title, head, baseBranch));
-        return Task.FromResult($"https://example/pr/{OpenedPrs.Count}");
+        var number = OpenedPrs.Count + 1000;
+        OpenedPrs.Add(new OpenedPr(number, title, head, baseBranch));
+        return Task.FromResult(new PullRequestRef(number, $"https://example/pr/{number}"));
+    }
+
+    public Task MergePullRequestAsync(int number, CancellationToken ct = default)
+    {
+        MergedPrs.Add(number);
+        return Task.CompletedTask;
     }
 
     public Task CloseIssueAsync(int number, CancellationToken ct = default)

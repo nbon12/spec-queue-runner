@@ -83,14 +83,17 @@ public sealed class GitHubClient : Port
         return comments.Select(c => c.Body ?? string.Empty).ToList();
     }
 
-    public async Task<string> CreatePullRequestAsync(
+    public async Task<PullRequestRef> CreatePullRequestAsync(
         string title, string body, string head, string baseBranch, CancellationToken ct = default)
     {
         var pr = await _client.PullRequest
             .Create(_owner, _repo, new NewPullRequest(title, head, baseBranch) { Body = body })
             .ConfigureAwait(false);
-        return pr.HtmlUrl;
+        return new PullRequestRef(pr.Number, pr.HtmlUrl);
     }
+
+    public async Task MergePullRequestAsync(int number, CancellationToken ct = default) =>
+        await _client.PullRequest.Merge(_owner, _repo, number, new MergePullRequest()).ConfigureAwait(false);
 
     public async Task CloseIssueAsync(int number, CancellationToken ct = default) =>
         await _client.Issue.Update(_owner, _repo, number, new IssueUpdate { State = ItemState.Closed })
