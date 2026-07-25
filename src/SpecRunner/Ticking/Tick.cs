@@ -106,6 +106,9 @@ public sealed class Tick(
 
         switch (stage)
         {
+            case Stage.Implement when kind is Kind.Audit:
+                await RunAuditAsync(item, worktreePath, ct).ConfigureAwait(false);
+                break;
             case Stage.Implement:
                 await RunImplementAsync(item, kind, worktreePath, ct).ConfigureAwait(false);
                 break;
@@ -277,6 +280,62 @@ public sealed class Tick(
             ct).ConfigureAwait(false);
         await github.AddLabelsAsync(item.Number, ["stage/implement"], ct).ConfigureAwait(false);
         log.WriteLine($"#{item.Number} at review next tick; PR {pr.Number} open.");
+    }
+
+    // An audit (FR-038–041) reads one spec — the least recently audited — compares it against the
+    // code, and reports. It MODIFIES NOTHING (FR-039): no branch, no PR, no diff. Findings become
+    // a comment on the audit issue; any follow-up work is filed as fresh, unclassified issues by
+    // the operator or a later run. One spec per audit; coverage comes from cadence (FR-041).
+    private async Task RunAuditAsync(WorkItem item, string worktreePath, CancellationToken ct)
+    {
+        var specDirs = ListSpecDirs(worktreePath);
+        var target = AuditSelection.LeastRecentlyAudited(
+            specDirs, new Dictionary<string, DateTimeOffset>(StringComparer.Ordinal));
+        if (target is null)
+        {
+            log.WriteLine("audit: no specs to audit — nothing to do.");
+            await github.AddCommentAsync(item.Number,
+                $"<!-- spec-runner:v1 kind=audit id=audit-{item.Number} -->\n**Audit** — no specs present to audit.",
+                ct).ConfigureAwait(false);
+            await github.CloseIssueAsync(item.Number, ct).ConfigureAwait(false);
+            return;
+        }
+
+        var claude = new ClaudeInvoker(processes, config.PermissionMode);
+        var prompt =
+            $"Audit the spec at `{target}` against the code in this repository. Compare the spec's " +
+            "requirements and natural-language tests to what the code and tests actually do. Report " +
+            "drift, gaps, and dead requirements. DO NOT modify any file — this is read-only. Report findings only.";
+        log.WriteLine($"audit: comparing {target} …");
+        var result = await claude.RunAsync(prompt, worktreePath, ct).ConfigureAwait(false);
+        log.WriteLine($"audit exit={result.ExitCode}");
+
+        await github.AddCommentAsync(item.Number,
+            $"""
+            <!-- spec-runner:v1 kind=audit id=audit-{item.Number} -->
+            **Audit** — reviewed `{target}` (least recently audited). Read-only; nothing modified.
+
+            Findings recorded from the audit run. File follow-ups as new issues if action is needed.
+            """, ct).ConfigureAwait(false);
+        await github.AddLabelsAsync(item.Number, ["stage/implement"], ct).ConfigureAwait(false);
+        await github.CloseIssueAsync(item.Number, ct).ConfigureAwait(false);
+        log.WriteLine($"#{item.Number} audit complete; closed.");
+
+        await FileSuccessorIfRecurringAsync(item, ct).ConfigureAwait(false);
+    }
+
+    private static List<string> ListSpecDirs(string worktreePath)
+    {
+        var specs = Path.Combine(worktreePath, "specs");
+        if (!Directory.Exists(specs))
+        {
+            return [];
+        }
+
+        return Directory.GetDirectories(specs)
+            .Select(d => Path.GetRelativePath(worktreePath, d))
+            .OrderBy(d => d, StringComparer.Ordinal)
+            .ToList();
     }
 
     private async Task RunReviewAsync(WorkItem item, string worktreePath, CancellationToken ct)

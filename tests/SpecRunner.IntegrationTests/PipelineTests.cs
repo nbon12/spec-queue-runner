@@ -152,6 +152,41 @@ public class PipelineTests
     }
 
     [Fact]
+    public async Task Audit_reports_and_closes_without_opening_a_pr()
+    {
+        var tmp = Directory.CreateTempSubdirectory("audit");
+        try
+        {
+            var github = new InMemoryGitHubClient();
+            github.AddUser("operator", 100);
+            github.AddIssue(11, "Audit the specs", "Targets: none", "operator", 100,
+                "status/ready", "kind/audit", "stage/intake");
+
+            var config = new InstanceConfig
+            {
+                Slug = "op/repo", Path = "/clone",
+                WorktreesRoot = Path.Combine(tmp.FullName, "work"),
+                OperatorLogin = "operator", BaseBranch = "master",
+                GitHubPatFile = "/run/secrets/pat",
+                ClaudeConfigPath = Path.Combine(tmp.FullName, ".claude.json"),
+                Lock = Path.Combine(tmp.FullName, ".lock"),
+            };
+            var processes = new RecordingProcessRunner();
+
+            await new Tick(config, github, processes, TextWriter.Null).RunAsync();
+
+            Assert.Empty(github.OpenedPrs);                  // audit modifies nothing (FR-039)
+            Assert.False(github.Issue(11).Open);             // reported and closed
+            Assert.Contains(github.Issue(11).Comments,
+                c => c.Contains("kind=audit", System.StringComparison.Ordinal));
+        }
+        finally
+        {
+            tmp.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Recurring_item_files_a_successor_when_it_closes()
     {
         var tmp = Directory.CreateTempSubdirectory("pipeline3");
