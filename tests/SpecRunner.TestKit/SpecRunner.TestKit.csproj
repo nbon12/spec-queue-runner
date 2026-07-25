@@ -4,6 +4,8 @@
        A library, not a test runner itself — the three suites reference it. -->
   <PropertyGroup>
     <RootNamespace>SpecRunner.TestKit</RootNamespace>
+    <!-- A support library, not a test runner — keep `dotnet test` from trying to run it. -->
+    <IsTestProject>false</IsTestProject>
   </PropertyGroup>
 
   <ItemGroup>

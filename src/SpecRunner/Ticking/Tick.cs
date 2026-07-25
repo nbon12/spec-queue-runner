@@ -208,19 +208,58 @@ public sealed class Tick(
     // item with no open PR as ready to implement.
     private static WorktreeSnapshot SnapshotFrom(string worktreePath, Kind kind, WorkItem item)
     {
-        _ = kind;
-        _ = worktreePath;
-        // MVP: the shaping/planning stages are treated as satisfied so a classified item derives
-        // to Implement. A full build reads spec/plan/tasks presence from the worktree and runs
-        // those SpecKit stages first (the machinery — StageCommand/ClaudeInvoker — is identical).
+        // Read the item's own worktree (never the clone, FR-013). A feature's artifacts live in
+        // its spec directory; the first unsatisfied predicate names the stage. For a chore/spike/
+        // audit — kinds with no spec — the shaping/planning predicates are vacuously satisfied so
+        // derivation lands on implement.
+        var isSpecKind = kind is Kind.Feature or Kind.Amendment;
+        var specDir = FindSpecDir(worktreePath);
+
+        bool Exists(string file) =>
+            specDir is not null && File.Exists(Path.Combine(specDir, file));
+
+        var specExists = !isSpecKind || Exists("spec.md");
+        var planExists = !isSpecKind || Exists("plan.md");
+        var tasksExists = !isSpecKind || Exists("tasks.md");
+        var analysisRecorded = !isSpecKind || Exists("analysis.md") || item.HasLabel("stage/analyze");
+
         return new WorktreeSnapshot(
             KindResolved: true,
-            SpecExists: true,
-            UnresolvedMarkerCount: 0,
-            PlanExists: true,
-            TasksExists: true,
-            AnalysisRecorded: true,
+            SpecExists: specExists,
+            UnresolvedMarkerCount: specExists ? MarkerCount(specDir) : 1,
+            PlanExists: planExists,
+            TasksExists: tasksExists,
+            AnalysisRecorded: analysisRecorded,
             PullRequestOpen: item.HasLabel("stage/implement"),
-            ReviewRecorded: false);
+            ReviewRecorded: item.HasLabel("stage/review"));
+    }
+
+    // The active feature's spec directory under specs/ (SpecKit convention: specs/NNN-name/).
+    private static string? FindSpecDir(string worktreePath)
+    {
+        var specs = Path.Combine(worktreePath, "specs");
+        if (!Directory.Exists(specs))
+        {
+            return null;
+        }
+
+        return Directory.GetDirectories(specs).OrderByDescending(d => d).FirstOrDefault();
+    }
+
+    private static int MarkerCount(string? specDir)
+    {
+        if (specDir is null)
+        {
+            return 0;
+        }
+
+        var spec = Path.Combine(specDir, "spec.md");
+        if (!File.Exists(spec))
+        {
+            return 0;
+        }
+
+        var text = File.ReadAllText(spec);
+        return text.Split("[NEEDS CLARIFICATION").Length - 1;
     }
 }

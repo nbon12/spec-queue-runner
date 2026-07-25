@@ -34,7 +34,7 @@ public static class CommandDispatcher
             "demo" => Demo(args),
             "run-stage" => RunStage(args),
             "tick" => TickOnce(args),
-            "doctor" => NotYetImplemented(args[0]),
+            "doctor" => Doctor(args),
             _ => Unknown(args[0]),
         };
     }
@@ -63,6 +63,25 @@ public static class CommandDispatcher
         var version = typeof(CommandDispatcher).Assembly.GetName().Version?.ToString() ?? "0.0.0";
         Console.WriteLine($"spec-runner {version}");
         return (int)ExitCode.Ok;
+    }
+
+    private static int Doctor(string[] args)
+    {
+        if (args.Length < 2)
+        {
+            Console.Error.WriteLine("usage: spec-runner doctor <config-path>");
+            return (int)ExitCode.ConfigInvalid;
+        }
+
+        try
+        {
+            return SpecRunner.Doctor.DoctorCommand.RunAsync(args[1]).GetAwaiter().GetResult();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"doctor failed: {ex.Message}");
+            return (int)ExitCode.InternalError;
+        }
     }
 
     private static int TickOnce(string[] args)
