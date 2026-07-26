@@ -1,4 +1,5 @@
 using SpecRunner.Configuration;
+using SpecRunner.Domain;
 using SpecRunner.TestKit;
 using SpecRunner.Ticking;
 using Xunit;
@@ -440,4 +441,88 @@ public class PipelineTests
             tmp.Delete(recursive: true);
         }
     }
+
+    /// <summary>
+    /// The review stage is told what it is reviewing (R17). Asserted at the process boundary,
+    /// because what reaches <c>claude</c>'s argv is the only thing the reviewer actually sees.
+    /// </summary>
+    [Fact]
+    public async Task Review_invocation_carries_the_pull_request_the_branches_and_the_issue()
+    {
+        var tmp = Directory.CreateTempSubdirectory("review-context");
+        try
+        {
+            var github = new InMemoryGitHubClient();
+            github.AddUser("operator", 100);
+            github.AddIssue(5, "Add a widget", "Targets: none", "operator", 100,
+                "status/ready", "kind/chore", "stage/intake", "stage/plan", "stage/implement");
+            github.Issue(5).Comments.Add(
+                "<!-- spec-runner:v1 kind=pr id=pr-5 number=42 url=https://example/pr/42 -->");
+
+            // The item's own spec directory comes from diffing its branch against the base — the
+            // branch adds `002-widget`, so that is what the reviewer must be given, whatever else
+            // happens to sit in `specs/`.
+            var processes = new RecordingProcessRunner
+            {
+                Respond = inv =>
+                    inv.FileName == "git" && inv.Arguments.Contains("--name-only")
+                        ? new SpecRunner.Ports.ProcessResult(0, "specs/002-widget/spec.md\n", "")
+                        : new SpecRunner.Ports.ProcessResult(0, "", ""),
+            };
+
+            await new Tick(HeldConfig(tmp), github, processes, TextWriter.Null).RunAsync();
+
+            var prompt = ReviewPromptSentTo(processes);
+            Assert.Contains("#42", prompt, System.StringComparison.Ordinal);                 // the PR
+            Assert.Contains("https://example/pr/42", prompt, System.StringComparison.Ordinal);
+            Assert.Contains("origin/master...work/5", prompt, System.StringComparison.Ordinal);
+            Assert.Contains("`master`", prompt, System.StringComparison.Ordinal);             // base
+            Assert.Contains("`work/5`", prompt, System.StringComparison.Ordinal);             // head
+            Assert.Contains("#5", prompt, System.StringComparison.Ordinal);                   // issue
+            Assert.Contains("Add a widget", prompt, System.StringComparison.Ordinal);
+            Assert.Contains("specs/002-widget", prompt, System.StringComparison.Ordinal);
+
+            // Issue-supplied text only ever appears inside the delimited data region (§6).
+            Assert.True(
+                prompt.IndexOf("Targets: none", System.StringComparison.Ordinal) >
+                prompt.IndexOf(ReviewPrompt.ContextHeading, System.StringComparison.Ordinal));
+        }
+        finally
+        {
+            tmp.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task An_item_whose_branch_adds_no_spec_directory_is_told_so_rather_than_left_blank()
+    {
+        var tmp = Directory.CreateTempSubdirectory("review-context2");
+        try
+        {
+            var github = new InMemoryGitHubClient();
+            github.AddUser("operator", 100);
+            github.AddIssue(6, "Bump a dependency", "", "operator", 100,
+                "status/ready", "kind/chore", "stage/intake", "stage/plan", "stage/implement");
+            github.Issue(6).Comments.Add("<!-- spec-runner:v1 kind=pr id=pr-6 number=43 -->");
+
+            var processes = new RecordingProcessRunner();   // no spec paths on the branch
+            await new Tick(HeldConfig(tmp), github, processes, TextWriter.Null).RunAsync();
+
+            var prompt = ReviewPromptSentTo(processes);
+            Assert.Contains(ReviewPrompt.NoSpecDir, prompt, System.StringComparison.Ordinal);
+            // A legacy marker with no `url=` still reviews — the URL falls back to the slug.
+            Assert.Contains("https://github.com/op/repo/pull/43", prompt, System.StringComparison.Ordinal);
+            Assert.Contains("stage/review", github.Issue(6).Labels);
+        }
+        finally
+        {
+            tmp.Delete(recursive: true);
+        }
+    }
+
+    private static string ReviewPromptSentTo(RecordingProcessRunner processes) =>
+        Assert.Single(processes.Invocations
+            .Where(i => i.FileName == "claude")
+            .SelectMany(i => i.Arguments)
+            .Where(a => a.Contains(ReviewPrompt.ContextHeading, System.StringComparison.Ordinal)));
 }

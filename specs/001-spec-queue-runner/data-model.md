@@ -120,6 +120,35 @@ an absent review stay distinguishable (FR-034f).
 | `BlockedOn` | irreversible findings that forced a block, if any |
 | `FiledIssues` | out-of-scope findings filed as new issues rather than fixed (FR-034g) |
 
+### ReviewContext
+
+Everything the review stage is *told* about what it is reviewing (R17). Assembled by the tick from
+facts it already holds; the reviewer derives none of it. Pure and immutable, so the composed prompt
+is a Tier 1 assertion rather than something only a live run reveals.
+
+| Field | Meaning | Source |
+|---|---|---|
+| `IssueNumber` | the work item under review | selected `WorkItem` |
+| `IssueTitle` | its title | selected `WorkItem` |
+| `IssueBody` | its body — **operator-authored, untrusted data** (FR-005/006) | selected `WorkItem` |
+| `PullRequestNumber` | the PR review works against (FR-034a) | `kind=pr` marker comment |
+| `PullRequestUrl` | its URL | marker `url=`, else derived from the slug |
+| `BaseRef` | the "before" side of the diff, e.g. `origin/main` | `config.BaseBranch` |
+| `HeadBranch` | the "after" side, e.g. `work/15` | `WorktreeLifecycle.BranchFor` |
+| `SpecDir` | the item's own spec directory, repo-relative — **`null` when the branch adds none** | `Git.SpecDirOnBranchAsync` (§3, v6.0.0) |
+| `CoverageManifest` | `specs/COVERAGE.md` if present on the branch, else `null` | filesystem check in the worktree |
+
+Invariants:
+
+- `SpecDir` is **discovered from the item's own branch, never guessed** by scanning `specs/` — the
+  same rule stage derivation obeys (§3). `null` is a legitimate value (a chore has no spec) and the
+  composed prompt says so out loud rather than leaving the reviewer to hunt.
+- `IssueBody` is the only untrusted field, and it is rendered **inside a delimited data region,
+  after** the version-controlled instructions (FR-034d/054). No comment body is ever a field here —
+  that is what keeps the Tier 3 injection canary green through the review path.
+- Every field is knowable before the invocation, so composition is a pure function:
+  `ReviewPrompt.Compose(instructions, context) -> string`.
+
 ### Finding
 
 An audit discrepancy. Names which side appears wrong; never prescribes the correction (FR-039/040).
@@ -199,5 +228,8 @@ the issue, and the session store (FR-047, §3).
 - **WorkItem** 1—* **DecisionRecord**, 1—0..1 **PullRequest**, 1—0..1 **ReviewRecord**.
 - **PullRequest** precedes **ReviewRecord**: the PR is opened at the end of implement and is
   the surface review works against, so an item carries an open PR while still in flight.
+- **ReviewContext** 1—1 the review *invocation*: assembled per run from the **WorkItem**, its
+  **PullRequest**, the instance config, and the item's branch. It is not persisted — every tick
+  rebuilds it from authoritative state (§3, per-iteration statelessness).
 - **Spec** 1—1 **coverage entry** in `specs/COVERAGE.md`; a spec's claim of accuracy extends
   only to paths under that entry (FR-037, §9).

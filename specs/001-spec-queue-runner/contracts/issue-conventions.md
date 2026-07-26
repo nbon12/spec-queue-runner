@@ -105,6 +105,19 @@ The marker serves three purposes: it makes posting idempotent under retry (the r
 the id before posting), it lets the runner recognise its own output rather than mistaking it for
 operator input (FR-005), and it makes the comment types machine-locatable for the reaper.
 
+### Pull-request marker (`kind=pr`)
+
+Posted when implement opens the PR. It is the **only** record that ties a stateless later tick back
+to the pull request, so it carries the PR's identity as marker fields rather than only in prose:
+
+```html
+<!-- spec-runner:v1 kind=pr id=pr-<issue#> number=<pr#> url=<pr-url> -->
+```
+
+`number=` is what the review tick locates the PR by; `url=` is what it passes to the reviewer as
+context (R17). A marker written before `url=` existed is still valid — the URL falls back to
+`https://github.com/<slug>/pull/<pr#>`, derived from the instance's configured slug.
+
 ### Decision comment (`kind=decision`)
 
 Posted **before** continuing, so a crash never loses the reasoning (FR-031).

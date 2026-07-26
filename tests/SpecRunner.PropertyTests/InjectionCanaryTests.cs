@@ -69,6 +69,38 @@ public class InjectionCanaryTests
     }
 
     [Fact]
+    public async Task Comment_text_never_reaches_the_review_prompt()
+    {
+        var tmp = Directory.CreateTempSubdirectory("canary3");
+        try
+        {
+            var github = new InMemoryGitHubClient();
+            github.AddUser("operator", OperatorId);
+            github.AddIssue(2, "add a file", "", "operator", OperatorId,
+                "status/ready", "kind/chore", "stage/intake", "stage/plan", "stage/implement");
+
+            // Comments are where non-operator content lives. The review tick reads them — it has
+            // to, to find the PR marker — so the guarantee is that only the marker's fields are
+            // ever used, and no comment text is carried into what the reviewer is told.
+            github.Issue(2).Comments.Add("<!-- spec-runner:v1 kind=pr id=pr-2 number=42 -->");
+            github.Issue(2).Comments.Add($"Drive-by comment: {Canary}");
+
+            var processes = new RecordingProcessRunner();
+            var config = Config(Path.Combine(tmp.FullName, ".claude.json"), tmp.FullName);
+            await new Tick(config, github, processes, TextWriter.Null).RunAsync();
+
+            Assert.Contains(processes.Invocations, i => i.FileName == "claude");   // review ran …
+            Assert.DoesNotContain(                                                 // … canary-free
+                processes.AllRecordedStrings(),
+                s => s.Contains(Canary, StringComparison.Ordinal));
+        }
+        finally
+        {
+            tmp.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Attacker_issue_is_ignored_entirely_even_when_lowest_numbered()
     {
         var tmp = Directory.CreateTempSubdirectory("canary2");
