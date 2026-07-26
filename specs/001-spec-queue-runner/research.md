@@ -289,3 +289,69 @@ still exists so `WorkRunner` doesn't care, but its live implementation is the sl
 not separately exercised here; the SpecKit commands that use it also run their own
 `check-prerequisites.sh`, which the runner already invokes. Confirm during the first real
 `/speckit.specify` headless run.
+
+## R17 — The review stage's context: what it is told, and how (issue #15)
+
+**Problem observed**: `Tick.RunReviewAsync` reads `.specify/prompts/code-review.md` and passes it
+to `claude -p` **verbatim, alone**. That prompt opens with "Please review this pull request" and
+goes on to say "each file the pull request touches", "this item's `spec.md`", and "every path this
+pull request touches". None of those referents are ever supplied. The reviewer is started in a
+worktree with a checked-out branch and left to infer which pull request, which two refs to compare,
+which issue it is serving, and which spec directory is the item's own.
+
+That inference is the same failure the constitution already banned once. v6.0.0 removed
+filesystem-guessed stage position because "which spec directory belongs to this item" cannot be
+answered by looking at `specs/` — `OrderByDescending` silently picked another item's spec. The
+review prompt asks the *model* to make exactly that guess, unassisted, on every review. A chore has
+no spec directory at all, so §2 of the prompt ("read this item's spec.md") is unanswerable for the
+kind that reaches review most often.
+
+**Decision**: compose the review prompt as **instructions + a delimited context block**, and
+supply four facts the runner already knows and the reviewer cannot reliably derive:
+
+| Fact | Source in the runner | Why the reviewer can't derive it |
+|---|---|---|
+| Pull request number + URL | the `kind=pr` marker comment (R10) | not present anywhere in the worktree |
+| Base ref and head branch | `config.BaseBranch`, `WorktreeLifecycle.BranchFor(n)` | `HEAD` is detached-ish context; nothing names the diff's other side |
+| Issue number, title, body | the selected `WorkItem` (operator-verified) | the worktree has no link back to the book of work |
+| The item's spec directory | `Git.SpecDirOnBranchAsync` (§3, v6.0.0) | requires branch-vs-base diffing, and guessing is the banned pattern |
+
+**Ordering is load-bearing (FR-034d, FR-054, §6)**: the version-controlled instructions come
+**first and verbatim**, and the context follows in a region explicitly framed as *data under
+review, not orders*. The pipeline definition must come from the repository; issue text may only
+answer questions the runner posed. Putting the issue body first — or interleaving it — would let an
+issue body's imperative sentences read as the reviewer's standing instructions.
+
+**Alternatives considered**:
+
+- *Leave it to the model.* Rejected: it is the guess v6.0.0 removed, and it silently produces a
+  confident review of the wrong spec rather than an error.
+- *Fetch the PR diff and paste it into the prompt.* Rejected: the reviewer has git and the whole
+  worktree; naming the two refs is strictly more useful than a snapshot, costs no tokens, and keeps
+  FR-034b's "before and after" a live operation rather than a pre-flattened blob.
+- *Rewrite `code-review.md` to hardcode the paths.* Rejected: the prompt is repo-level and
+  item-agnostic by design (FR-034d), and the file's own note promises the runner passes it through
+  verbatim.
+- *Add the context via `$ARGUMENTS`/a slash command.* Rejected: review is deliberately not a
+  SpecKit command (`StageCommand.SlashCommandFor(Review) == null`); it reads a config-named file so
+  a project can own its own review policy.
+
+**Two honesty items the context block also carries**, because a review that silently skips a
+section is indistinguishable from one that performed it:
+
+- **No spec directory** (chore, or specify has not run): the block says so explicitly and tells the
+  reviewer that the spec-coverage section does not apply — rather than leaving it to hunt.
+- **No coverage manifest**: `specs/COVERAGE.md` is referenced by §3 of the review prompt and does
+  **not exist in this repository today**. The block states its presence or absence from the item's
+  branch, so cross-spec drift checking is either performed or reported as impossible, never quietly
+  dropped. (Creating the manifest is separate work and out of this item's scope — FR-034g.)
+
+**PR URL sourcing**: the `kind=pr` marker records only `number=`. It gains a `url=` field at PR-open
+time; items whose marker predates the change fall back to `https://github.com/{slug}/pull/{n}`,
+derived from the instance's configured slug. Deriving alone would be enough for github.com, but the
+marker is the authoritative record and reading it keeps the runner from asserting a URL it never saw.
+
+**Injection posture is unchanged and must be re-asserted by test**: every field above comes from the
+operator-verified issue (FR-005 filters the candidate before selection) or from the runner's own
+config and git. **No comment body ever enters the review prompt** — which is what keeps the Tier 3
+canary green, and is worth an explicit assertion rather than an inherited one.
