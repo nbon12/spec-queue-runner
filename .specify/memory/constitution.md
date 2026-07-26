@@ -1,6 +1,47 @@
 <!--
 Sync Impact Report
 ==================
+Version change: 4.0.0 -> 5.0.0
+Modified principles:
+  Technology Stack (section 2) — the execution model changes from "launchd fires a fresh
+    container every interval" to "one long-lived supervisor container per instance, looping
+    internally". launchd is demoted from scheduler to (optional) container starter; the
+    supervisor's restart policy is what keeps the instance alive.
+  Architectural Invariants (section 3) — "The tick is stateless reconciliation" is RETAINED
+    but re-scoped: statelessness is now a property of each ITERATION rather than of the OS
+    process. Two new invariants make that enforceable: the supervisor MUST carry nothing
+    between iterations, and it MUST be killable between or during any iteration with the same
+    convergence guarantee the process boundary used to provide for free.
+Added sections: None.
+Removed sections: None.
+Version bump rationale (MAJOR): a mandated part of the stack is redefined. The process boundary
+  that previously ENFORCED statelessness is removed; statelessness becomes a discipline the
+  code must hold rather than a consequence of the process exiting. That is a weakening of a
+  structural guarantee and must be recorded loudly.
+EVIDENCE — this amendment fixes a latent defect, it is not a preference:
+  Live sessions CANNOT WORK under the ephemeral model. The tick spawns tmux inside its own
+  container; when the tick exits, `--rm` tears the container down and the tmux server dies with
+  it. FR-021/023/025/047 (a live session with no timeout, resumable across ticks) are
+  unsatisfiable by construction. The defect is latent only because no item has blocked yet.
+  A long-lived container is what makes the live channel possible at all.
+SECONDARY MOTIVATION (operator, 2026-07-26): the ephemeral model is opaque in practice. A
+  container that lives ~0.3s cannot be inspected — `docker ps` shows nothing and `docker logs`
+  has no target — so the operator had no way to see what the runner was doing.
+TRADE-OFF ACCEPTED: an always-running process can leak, drift, or wedge in ways a fresh process
+  cannot, and no external scheduler now forces a clean start. Mitigations are mandated in
+  sections 2 and 3: carry nothing between iterations, restart-on-failure, and a health command
+  that reports liveness.
+Templates requiring updates:
+  .specify/templates/plan-template.md ✅ compatible — Constitution Check populated at plan time.
+  .specify/templates/spec-template.md ✅ compatible — no change needed.
+  .specify/templates/tasks-template.md ✅ compatible — no change needed.
+Follow-up TODOs:
+  - specs/001-spec-queue-runner/spec.md FR-001/FR-003/FR-052a describe launchd firing each tick;
+    amend to the supervisor model.
+  - Intake is still the demo keyword heuristic, not the Claude-based classifier its own doc
+    comment promises; it misclassified a feature as an audit on 2026-07-26. Tracked separately.
+
+----- prior amendment -----
 Version change: 3.0.0 -> 4.0.0
 Modified principles:
   Security & Trust Boundaries (section 6) — "Token scope is minimal" is redefined. The GitHub
@@ -163,7 +204,7 @@ Follow-up TODOs: None.
 
 # Spec Queue Runner Constitution
 
-**Version**: 4.0.0 | **Ratified**: 2026-07-25 | **Last Amended**: 2026-07-26
+**Version**: 5.0.0 | **Ratified**: 2026-07-25 | **Last Amended**: 2026-07-26
 **Authors**: Project maintainers
 
 ## 1. Project Purpose
@@ -175,7 +216,7 @@ is away, resuming automatically when Claude Code credits reset. All features MUS
 - **Unattended correctness**: the system runs overnight with no human present; every design
   decision MUST assume nobody is awake to intervene.
 - **One instance per repository**: the same binary runs as fully independent instances —
-  separate config, launchd job, lock, and log. Instances MUST NOT coordinate, share state,
+  separate config, supervisor container, lock, and log. Instances MUST NOT coordinate, share state,
   or know of each other's existence.
 - **One worktree per work item**: every Claude Code invocation for an item executes in that
   item's own git worktree. Items MUST NOT share a checkout; the clone is never a working
@@ -210,10 +251,15 @@ All implementations MUST conform to the following:
   Keychain is unreachable from a Linux container and is no longer used.) Claude Code's own
   claude.ai OAuth credential is minted by a **one-time in-container `/login`** and persisted in
   a **named Docker volume**, so it survives container rebuilds; it is never baked into the image.
-- **Scheduling**: **launchd** with `StartInterval` (not cron) — launchd runs a missed job on
-  wake, which is essential for a system premised on overnight work. launchd fires the tick by
-  invoking **Docker** (`docker run`/`docker exec`) rather than the binary directly; it is the
-  one remaining host-side touchpoint. The launchd plist is per-instance.
+- **Scheduling**: one **long-lived supervisor container per instance**, which sleeps and runs a
+  tick on the configured interval from inside. The supervisor is the scheduler; the container
+  runtime's **restart-on-failure policy** is what keeps the instance alive. A host trigger
+  (launchd, systemd, or a hand-run `docker start`) MAY start the container, but MUST NOT be
+  relied on to fire individual ticks. Rationale: a container that exits after every tick cannot
+  host a live session — tmux dies with it — which makes the live channel unimplementable, and
+  it cannot be inspected while running, which makes the system opaque to its operator.
+  The supervisor MUST remain a thin loop: sleep, construct a tick, run it, discard everything.
+  Running a single tick by hand (`tick <config>`) MUST remain supported for diagnosis.
 - **GitHub access**: the **REST API** via a fine-grained PAT; Octokit or raw `HttpClient`,
   whichever has less friction, behind an interface the tests can fake.
 - **Process orchestration**: `git` (worktrees), `tmux` (live sessions), and `claude`
@@ -227,8 +273,9 @@ All implementations MUST conform to the following:
   amendment.
 - **Portability**: the container is the portability boundary — the whole tick runs on any
   Docker host, and the image already targets Linux, so there is no separate "Linux port" to
-  maintain. **launchd is the only host-specific touchpoint**; it is isolated behind a small
-  seam so a non-macOS host replaces the trigger (e.g. systemd timer) without touching tick
+  maintain. **the host trigger is the only host-specific touchpoint**, and it now merely starts a
+  container rather than firing each tick — so a non-macOS host substitutes its own starter
+  (systemd unit, `--restart` policy alone) without touching tick
   logic. Secret delivery (mounted file / Docker secret) is likewise a seam, not baked in.
 - **Testing**: **xUnit**, per the Spec Kit Testing Constitution below. No Testcontainers,
   no database fixtures — the test doubles are a fake `claude` binary, disposable git fixture
@@ -240,9 +287,22 @@ These are the load-bearing rules of the design. Violating any of them is an arch
 regression, not a style issue.
 
 - **The tick is stateless reconciliation.** A tick reads authoritative state (GitHub, the
-  worktree filesystem, tmux), computes what to do, does at most one unit of work, and exits.
+  worktree filesystem, tmux), computes what to do, does at most one unit of work, and finishes.
   It MUST be killable at any point: re-running ticks to quiescence MUST converge to the same
   end state as a never-crashed run, with no duplicated comments or labels.
+- **Statelessness is per-iteration, and is now a discipline rather than a consequence.** The
+  supervisor no longer exits between ticks, so the process boundary that used to *enforce*
+  statelessness is gone. Therefore: every tick MUST construct its collaborators fresh and read
+  every fact it acts on from GitHub or the filesystem at the start of that iteration. Carrying
+  a work item, a resolved operator identity, a snapshot, or any cached client between iterations
+  is forbidden — a supervisor restarted mid-run and one that has looped for a month MUST behave
+  identically. Anything genuinely long-lived (a live session) belongs in the filesystem, the
+  issue, or tmux, never in supervisor memory.
+- **The supervisor must be disposable.** Killing it between or during any iteration MUST cost
+  nothing beyond an interrupted unit of work that the next iteration reconciles. It MUST restart
+  cleanly without manual repair, and a single tick MUST remain runnable independently for
+  diagnosis. An unhandled fault in one iteration MUST NOT terminate the supervisor or leave the
+  loop wedged; it is logged and the next iteration proceeds.
 - **Predicates are the authority; labels are a cache.** Every pipeline stage has an exit
   condition that is a filesystem or issue predicate, observable by any tick with no memory
   of previous ticks. Stage predicates MUST be evaluated in the item's worktree, never the
@@ -300,7 +360,8 @@ regression, not a style issue.
 
 - **Exit discipline**: a tick that finds the lock held, or has nothing to do, MUST exit 0
   within a few seconds. Exit codes MUST distinguish "nothing to do" (0) from configuration
-  and environment errors (non-zero) so launchd logs are diagnosable.
+  and environment errors (non-zero) so a hand-run tick is diagnosable; the supervisor logs the
+  same distinction per iteration rather than exiting on it.
 - **One unit of work per tick.** Work selection is the lowest-numbered open issue labelled
   `status/ready`; exactly one item per tick. Parallel work within an instance is out of
   scope without amendment.
