@@ -25,6 +25,10 @@ public sealed class Tick(
     Func<TimeOnly>? clock = null,
     Func<DateTimeOffset>? utcClock = null)
 {
+    /// <summary>The manifest §3 of the review prompt consults, repo-relative. Its absence is
+    /// stated to the reviewer rather than left to silently skip the cross-spec check.</summary>
+    private const string CoverageManifest = "specs/COVERAGE.md";
+
     // Real collaborators by default; tests inject a fake store and fixed clocks. The store reads
     // Claude Code's on-disk transcripts; the time-of-day clock drives the waking-hours gate
     // (FR-021/026); the wall clock drives stale-reclaim age arithmetic (FR-044).
@@ -594,11 +598,11 @@ public sealed class Tick(
             item.Title, prBody, branch, config.BaseBranch, ct).ConfigureAwait(false);
         log.WriteLine($"opened PR: {pr.Url}");
 
-        // Record the PR number in a marker so the review tick (stateless) can find it. The issue
-        // stays OPEN until review completes (FR-033/033a) — the PR is review's surface, not the
-        // finish line.
+        // Record the PR in a marker so the review tick (stateless) can find it — number to locate
+        // it by, URL to name it to the reviewer. The issue stays OPEN until review completes
+        // (FR-033/033a) — the PR is review's surface, not the finish line.
         await github.AddCommentAsync(item.Number,
-            $"<!-- spec-runner:v1 kind=pr id=pr-{item.Number} number={pr.Number} -->\nImplemented; opened {pr.Url}. Review pending.",
+            $"{PullRequestMarker.For(item.Number, pr.Number, pr.Url)}\nImplemented; opened {pr.Url}. Review pending.",
             ct).ConfigureAwait(false);
         await github.AddLabelsAsync(item.Number, ["stage/implement"], ct).ConfigureAwait(false);
         log.WriteLine($"#{item.Number} at review next tick; PR {pr.Number} open.");
@@ -691,12 +695,14 @@ public sealed class Tick(
     private async Task<bool> RunReviewAsync(WorkItem item, string worktreePath, CancellationToken ct)
     {
         var bodies = await github.GetCommentBodiesAsync(item.Number, ct).ConfigureAwait(false);
-        var prNumber = FindPrNumber(bodies);
-        if (prNumber is null)
+        var pr = PullRequestMarker.Find(bodies, config.Slug);
+        if (pr is null)
         {
             log.WriteLine("review: could not find the PR marker — leaving item for next tick.");
             return false;
         }
+
+        var prNumber = pr.Number;
 
         // Review runs in a FRESH session (FR-034a1) with the repo's own review prompt (FR-034d).
         // For the MVP it runs and records; a fuller build parses findings and blocks on irreversible
@@ -706,8 +712,31 @@ public sealed class Tick(
         var reviewInstruction = File.Exists(reviewPromptPath)
             ? await File.ReadAllTextAsync(reviewPromptPath, ct).ConfigureAwait(false)
             : "Review the changes on this branch against the base branch. Report findings.";
-        log.WriteLine($"review: running against PR #{prNumber} …");
-        var result = await claude.RunAsync(reviewInstruction, worktreePath, ct).ConfigureAwait(false);
+
+        // …and it is told what those instructions refer to (R17). Without this the reviewer is
+        // dropped into a worktree and left to infer which PR, which two refs, which issue, and
+        // which spec is the item's own — that last one being exactly the guess constitution
+        // v6.0.0 removed, so the spec directory is discovered from the branch, never scanned for.
+        var specDir = await new Git(processes)
+            .SpecDirOnBranchAsync(worktreePath, config.BaseBranch, ct).ConfigureAwait(false);
+        var coverage = System.IO.Path.Combine(worktreePath, CoverageManifest);
+        var reviewContext = new ReviewContext(
+            IssueNumber: item.Number,
+            IssueTitle: item.Title,
+            IssueBody: item.Body,
+            PullRequestNumber: pr.Number,
+            PullRequestUrl: pr.Url,
+            BaseBranch: config.BaseBranch,
+            HeadBranch: WorktreeLifecycle.BranchFor(item.Number),
+            SpecDir: specDir,
+            CoverageManifest: File.Exists(coverage) ? CoverageManifest : null);
+
+        log.WriteLine($"review: running against PR #{prNumber} " +
+                      $"({reviewContext.BaseRef}...{reviewContext.HeadBranch}; " +
+                      $"spec {specDir ?? "none"}) …");
+        var result = await claude
+            .RunAsync(ReviewPrompt.Compose(reviewInstruction, reviewContext), worktreePath, ct)
+            .ConfigureAwait(false);
         var outcome = StageOutcome.From(result);
         log.WriteLine($"review: {outcome} (exit {result.ExitCode})");
 
@@ -798,7 +827,7 @@ public sealed class Tick(
                     : $"yes — `{config.Verify}` passed")}
                 - **Merged**: yes (auto-merge on; spend under cap)
                 """, ct).ConfigureAwait(false);
-            await github.MergePullRequestAsync(prNumber.Value, ct).ConfigureAwait(false);
+            await github.MergePullRequestAsync(prNumber, ct).ConfigureAwait(false);
             log.WriteLine($"merged PR #{prNumber}.");
         }
         else
@@ -835,38 +864,6 @@ public sealed class Tick(
         var successor = await github.CreateIssueAsync(
             item.Title, body, ["status/ready"], ct).ConfigureAwait(false);
         log.WriteLine($"recurrence: filed successor #{successor} of #{item.Number} (cadence {cadence}).");
-    }
-
-    private static int? FindPrNumber(IEnumerable<string> commentBodies)
-    {
-        foreach (var body in commentBodies)
-        {
-            var idx = body.IndexOf("kind=pr id=pr-", StringComparison.Ordinal);
-            if (idx < 0)
-            {
-                continue;
-            }
-
-            var marker = body.IndexOf("number=", idx, StringComparison.Ordinal);
-            if (marker < 0)
-            {
-                continue;
-            }
-
-            var start = marker + "number=".Length;
-            var end = start;
-            while (end < body.Length && char.IsDigit(body[end]))
-            {
-                end++;
-            }
-
-            if (end > start && int.TryParse(body[start..end], out var n))
-            {
-                return n;
-            }
-        }
-
-        return null;
     }
 
     // The demo drives the implement path directly; a full build reads spec/plan/tasks presence

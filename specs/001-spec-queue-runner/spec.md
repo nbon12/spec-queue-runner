@@ -208,6 +208,7 @@ On its own recurring schedule, the runner selects the spec that has gone longest
 - **FR-034e**: Review findings follow execution-stage ambiguity policy: a reversible finding MUST be fixed on the item's branch and reported as a decision comment referencing the fixing commit; an irreversible finding MUST block via the live channel or its comment fallback.
 - **FR-034f**: A review that finds nothing MUST still record that it ran and found nothing, so a silent review and an absent review are distinguishable after the fact.
 - **FR-034g**: Review MUST NOT expand the scope of the item. A finding that calls for work beyond the item's stated intent MUST be filed as a new issue rather than fixed in place, consistent with forward-only correction.
+- **FR-034h**: The review invocation MUST supply the referents its instructions depend on: the pull request under review, the two refs being compared (the item's branch and the base branch), the issue the work came from with its title, and the item's own spec directory — or, when its branch adds none, a statement that it has none. This context MUST follow the version-controlled instructions and be presented as data about the change, never as further instructions; the instructions themselves MUST pass through unmodified, so editing the prompt file remains the only way to change what the review is asked to do.
 
 **Spec authorship**
 
