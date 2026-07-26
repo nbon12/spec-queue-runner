@@ -309,6 +309,16 @@ On its own recurring schedule, the runner selects the spec that has gone longest
 
 - **Live-block resolution (FR-024/019)** is detected from durable state, not a chat scrape: a block is resolved when either the session has written its answers into the worktree (the clarify markers clear) **or** the operator posts a plain, non-marker comment. Either signal reaps the now-redundant tmux session and returns the item to the pipeline.
 - **Stale-reclaim timing (FR-044)** reads the age of the `status/in-progress` label from the issue's own event timeline (`GetLabelAppliedAt`), so no timestamp is stored runner-side; live and held items carry different labels and are exempt by construction.
+- **Credential monitoring (FR-052b)** checks whether the claude.ai credential is still
+  *refreshable*, not whether it is *fresh*. Measured behaviour: the access token lives ~12 hours
+  and Claude Code refreshes it automatically, persisting the new token into the mounted volume so
+  the next tick inherits it (observed advancing 09:03 → 21:40 during one run). Warning on that
+  expiry — the literal reading of "imminent or actual expiry MUST be surfaced loudly" — would fire
+  twice a day for a self-healing condition while missing the real stall: a dead **refresh** token
+  (logout, revocation, lapsed subscription). `doctor` therefore reports
+  `claude.ai credential refreshable` and prints access-token expiry as context only. Note the
+  prior check accepted `.claude.json` as evidence of a credential; since that file holds trust
+  settings and nearly always exists, it could report PASS with no credential at all.
 - **Live-session resumption (FR-022/047)** records and resumes by Claude Code's **conversation id**, recovered by reading the newest transcript under `~/.claude/projects/<encoded-worktree>/`. The path encoding matches the probe transcript path (separators → dashes); an unreadable folder simply yields no id and fails safe to the comment fallback.
 - The four probe-dependent defaults flagged under Assumptions (workspace-trust carry-over, kickoff delivery, resume-by-id, one-session-at-a-time) were all validated by the 2026-07-25 probe and are now implemented (FR-012a/021a/022/025).
 

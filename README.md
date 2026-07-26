@@ -84,7 +84,8 @@ All run in the container. `deploy/run-tick.sh` is a thin wrapper that mounts the
 ```
 
 `doctor` is the honest health check — config, toolchain, secret readability, clone validity,
-operator-ID resolution, and Claude credential presence. Run it first whenever something is off.
+operator-ID resolution, and whether the Claude credential is still *refreshable* (see
+[Credentials](#credentials-and-what-actually-expires)). Run it first whenever something is off.
 
 ## Setting up another project
 
@@ -137,6 +138,37 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.spec-runner.<owner>.
 ```
 
 To pause an instance: `launchctl bootout gui/$(id -u)/com.spec-runner.<owner>.<repo>`.
+
+### Credentials, and what actually expires
+
+Two credentials per instance, with very different maintenance stories.
+
+**The GitHub token** is a file on the host, mounted read-only at `/run/secrets/github_pat`.
+It never appears in config, image, or repo. Expiry is whatever you set when you issue it.
+
+**The claude.ai OAuth** is established once by an in-container `/login` and persisted in the
+instance's volume. It is *two* tokens, and conflating them causes needless worry:
+
+| | Lifetime | Who maintains it |
+|---|---|---|
+| Access token | ~12 hours | **nobody** — Claude Code refreshes it and writes the result back to the volume, so the next tick inherits it |
+| Refresh token | long-lived, no fixed expiry | you, but only when it actually dies |
+
+So a routinely "expired" access token is a non-event — the runner heals itself roughly twice a
+day, indefinitely. What genuinely stops the runner is the **refresh token** dying: an explicit
+logout, a revoked session, or a lapsed subscription. That's why `doctor` checks
+`claude.ai credential refreshable` rather than freshness — warning on access-token expiry would
+cry wolf every twelve hours while missing the failure that matters.
+
+When that check fails, re-login (interactive; prints a URL you can open on your phone):
+
+```bash
+docker run --rm -it -v "sr-$KEY-home:/home/runner" \
+  --entrypoint /home/runner/.local/bin/claude spec-runner:latest /login
+```
+
+Because the credential lives in the volume, it survives image rebuilds — you do not re-login
+after changing runner code.
 
 ### Configuration
 

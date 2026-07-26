@@ -64,9 +64,15 @@ rm ~/Library/LaunchAgents/com.spec-runner.nbon12.spec-queue-runner.plist
    review, with only a digest comment. Flip to `false` in `spec-queue-runner.toml` if you
    want to gate merges yourself while you build trust.
 
-3. **Claude OAuth expires** (FR-052b). The credential in `sr-self-home/.claude` was
-   reused from the 2026-07-25 in-container login. When it lapses, live sessions and
-   headless runs stall; `doctor` flags it. Re-login:
+3. **Claude credential** (FR-052b). Reused from the 2026-07-25 in-container login and
+   held in `sr-self-home/.claude`. The access token lives ~12 hours, but Claude Code
+   refreshes it automatically and writes the result back to the volume, so every tick
+   inherits a fresh one — **routine expiry needs nothing from you** (measured: the
+   expiry advanced from 09:03 to 21:40 during a single run).
+
+   What does need you is the **refresh token** dying — logout, credential revocation,
+   or a lapsed subscription. `doctor` reports `claude.ai credential refreshable`, which
+   is the condition that actually matters. When it fails, re-login:
    ```bash
    docker run --rm -it -v sr-self-home:/home/runner --entrypoint /home/runner/.local/bin/claude \
      spec-runner:latest /login

@@ -1,6 +1,7 @@
 using SpecRunner.Adapters;
 using SpecRunner.Adapters.GitHub;
 using SpecRunner.Configuration;
+using SpecRunner.Domain;
 using SpecRunner.Ports;
 
 namespace SpecRunner.Doctor;
@@ -75,9 +76,12 @@ public static class DoctorCommand
             }
         }
 
-        // claude.ai credential presence + expiry (FR-052b). The credential lives in ~/.claude.json.
-        Check("claude.ai credential present", ClaudeCredentialPresent(config),
-            "run in-container /login if missing (Remote Control needs a full-scope session)");
+        // claude.ai credential health (FR-052b). What matters is whether it is still REFRESHABLE:
+        // the access token lives ~12h and Claude Code refreshes it into the mounted volume by
+        // itself, so its expiry is routine. A missing refresh token is the real stall risk.
+        var credential = ClaudeCredential.Parse(ReadClaudeCredential(config));
+        Check("claude.ai credential refreshable", credential.Ok,
+            credential.Describe(DateTimeOffset.UtcNow));
 
         var allOk = checks.All(c => c.Ok);
         foreach (var (name, ok, detail) in checks)
@@ -103,13 +107,33 @@ public static class DoctorCommand
         }
     }
 
-    private static bool ClaudeCredentialPresent(InstanceConfig? config)
+    /// <summary>
+    /// The credential file's text, or null if absent. Its home is the directory holding Claude
+    /// Code's config (<c>~/.claude.json</c> by default) — the same home the projects folder and
+    /// the mounted volume share. Deliberately does NOT fall back to <c>.claude.json</c> as
+    /// evidence of a credential: that file holds trust settings and is almost always present, so
+    /// accepting it would report PASS with no credential at all.
+    /// </summary>
+    private static string? ReadClaudeCredential(InstanceConfig? config)
     {
-        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        var credsFile = Path.Combine(home, ".claude", ".credentials.json");
         var configFile = string.IsNullOrEmpty(config?.ClaudeConfigPath)
-            ? Path.Combine(home, ".claude.json")
+            ? Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude.json")
             : config.ClaudeConfigPath;
-        return File.Exists(credsFile) || File.Exists(configFile);
+        var home = Path.GetDirectoryName(configFile) ?? ".";
+        var credsFile = Path.Combine(home, ".claude", ".credentials.json");
+
+        try
+        {
+            return File.Exists(credsFile) ? File.ReadAllText(credsFile) : null;
+        }
+        catch (IOException)
+        {
+            return null;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return null;
+        }
     }
 }
