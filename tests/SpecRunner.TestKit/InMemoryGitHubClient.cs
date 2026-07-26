@@ -153,8 +153,19 @@ public sealed class InMemoryGitHubClient : IGitHubClient
         return Task.FromResult(new PullRequestRef(number, $"https://example/pr/{number}"));
     }
 
+    /// <summary>
+    /// Set this to make GitHub refuse a merge, as branch protection does when a required check is
+    /// still running or the branch is judged out of date on GitHub's side.
+    /// </summary>
+    public Func<int, Exception?> MergeRefusal { get; set; } = _ => null;
+
     public Task MergePullRequestAsync(int number, CancellationToken ct = default)
     {
+        if (MergeRefusal(number) is { } refusal)
+        {
+            return Task.FromException(refusal);
+        }
+
         MergedPrs.Add(number);
         return Task.CompletedTask;
     }

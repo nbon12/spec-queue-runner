@@ -21,10 +21,15 @@ public sealed class WorktreeLifecycle(
     public static string BranchFor(int number) => $"work/{number}";
 
     /// <summary>
-    /// Ensures the item's worktree exists (branching off main if new) and is trust-seeded.
-    /// Idempotent: an existing worktree is left in place. Returns the worktree path.
+    /// Ensures the item's worktree exists (branching off the LATEST base if new) and is
+    /// trust-seeded. Idempotent: an existing worktree is left in place.
+    ///
+    /// Returns the worktree path, or null when a new worktree could not be branched off the
+    /// latest base because the fetch failed. Null is not an error to report on the issue — it is
+    /// "not now": the item is left exactly as it was and a later tick, with the network back,
+    /// starts it on a base that is actually current (CLAUDE.md, "branch off the latest base").
     /// </summary>
-    public async Task<string> EnsureAsync(int number, CancellationToken ct = default)
+    public async Task<string?> EnsureAsync(int number, CancellationToken ct = default)
     {
         var path = PathFor(number);
         var branch = BranchFor(number);
@@ -35,16 +40,23 @@ public sealed class WorktreeLifecycle(
 
             // Refresh the clone before branching. Nothing else fetches, so without this every new
             // item branches from whatever the clone held when it was first created — a base that
-            // grows staler with every merge, including the runner's own. A fetch failure is not
-            // fatal (offline, transient): branching from a stale base still works, so log via the
-            // exit code and carry on rather than wedging the queue.
+            // grows staler with every merge, including the runner's own.
             var fetch = await git.RunAsync(
                 "git", ["fetch", "origin", baseBranch], workingDirectory: clonePath, ct: ct)
                 .ConfigureAwait(false);
 
-            // Branch from the REMOTE ref when the fetch succeeded, so a stale local branch cannot
-            // silently determine the base; fall back to the local ref when offline.
-            var startPoint = fetch.ExitCode == 0 ? $"origin/{baseBranch}" : baseBranch;
+            // A failed fetch used to fall back to the clone's local ref. That silently produced
+            // exactly the thing the rule forbids — a branch cut from a base of unknown age — and
+            // the staleness then travelled all the way to the merge. Waiting a tick is cheap;
+            // an item built on a base nobody can name is not.
+            if (fetch.ExitCode != 0)
+            {
+                return null;
+            }
+
+            // Branch from the REMOTE ref, never the local one: a stale local branch must not be
+            // able to determine the base of new work.
+            var startPoint = $"origin/{baseBranch}";
 
             var result = await git.RunAsync(
                 "git",

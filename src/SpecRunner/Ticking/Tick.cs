@@ -127,6 +127,14 @@ public sealed class Tick(
         var worktrees = new WorktreeLifecycle(
             processes, config.Path, config.WorktreesRoot, ResolveClaudeConfig(), config.BaseBranch);
         var worktreePath = await worktrees.EnsureAsync(item.Number, ct).ConfigureAwait(false);
+        if (worktreePath is null)
+        {
+            // No branch is cut from a base whose age we cannot establish (CLAUDE.md). The item is
+            // untouched — still ready, no labels moved — so the next tick simply starts it.
+            log.WriteLine($"#{item.Number}: could not fetch origin/{config.BaseBranch} — " +
+                          "not branching off a stale base; retrying next tick.");
+            return (int)Cli.ExitCode.Ok;
+        }
 
         // Position is the first stage with no completion label (constitution §3, v6.0.0). The
         // worktree holds the work; the issue holds the record of what is done.
@@ -252,6 +260,69 @@ public sealed class Tick(
             .ConfigureAwait(false);
         await git.PushAsync(worktreePath, branch, ct).ConfigureAwait(false);
         log.WriteLine($"#{item.Number} {stage} artifacts committed and pushed to {branch}.");
+    }
+
+    /// <summary>
+    /// Bring the item's branch onto the latest base, and say what it took (CLAUDE.md).
+    ///
+    /// This runs before the branch is judged and again before it is merged, because both claims
+    /// are only true of the code that would actually land: a review of a branch that is three
+    /// commits behind reviewed something else, and a build that passed on the old base proves
+    /// nothing about the new one. Rebase rather than merge-in, so the branch stays a clean replay
+    /// of the base and the PR shows only the item's own commits.
+    /// </summary>
+    private async Task<Freshness> RefreshAgainstBaseAsync(WorkItem item, string worktreePath, CancellationToken ct)
+    {
+        var git = new Git(processes);
+        if (!await git.FetchBaseAsync(worktreePath, config.BaseBranch, ct).ConfigureAwait(false))
+        {
+            log.WriteLine($"freshness: could not fetch origin/{config.BaseBranch} — base unknown.");
+            return Freshness.BaseUnknown;
+        }
+
+        // Null (count unavailable) falls through to the rebase deliberately: an unknown distance
+        // is not zero, and a rebase that turns out to be a no-op costs one git call.
+        var behind = await git.CommitsBehindBaseAsync(worktreePath, config.BaseBranch, ct).ConfigureAwait(false);
+        if (behind == 0)
+        {
+            return Freshness.UpToDate;
+        }
+
+        log.WriteLine($"freshness: #{item.Number} is {behind?.ToString() ?? "an unknown number of"} " +
+                      $"commit(s) behind origin/{config.BaseBranch} — rebasing.");
+
+        var before = await git.HeadShaAsync(worktreePath, ct).ConfigureAwait(false);
+        if (!await git.RebaseOntoBaseAsync(worktreePath, config.BaseBranch, ct).ConfigureAwait(false))
+        {
+            log.WriteLine($"freshness: #{item.Number} conflicts with origin/{config.BaseBranch}; rebase aborted.");
+            return Freshness.Conflicted;
+        }
+
+        var after = await git.HeadShaAsync(worktreePath, ct).ConfigureAwait(false);
+        if (string.Equals(before, after, StringComparison.Ordinal))
+        {
+            // The replay moved nothing, so the branch already sat on the base — no rewritten
+            // history, and nothing to push.
+            return Freshness.UpToDate;
+        }
+
+        await git.ForcePushAsync(worktreePath, WorktreeLifecycle.BranchFor(item.Number), ct).ConfigureAwait(false);
+        log.WriteLine($"freshness: #{item.Number} rebased onto origin/{config.BaseBranch} and force-pushed.");
+        return Freshness.Rebased;
+    }
+
+    /// <summary>Stop the stage on a branch that is not, or cannot be shown to be, current.</summary>
+    private async Task ReportStaleAsync(WorkItem item, int prNumber, Freshness freshness, CancellationToken ct)
+    {
+        await github.AddCommentAsync(item.Number,
+            $"""
+            <!-- spec-runner:v1 kind=stale-branch id=stale-{item.Number}-{freshness} -->
+            **PR #{prNumber} was not merged** — {BranchFreshness.Explain(freshness, config.BaseBranch)}.
+
+            A branch that has fallen behind `{config.BaseBranch}` is never merged as-is; it is
+            rebased onto the latest base first, and re-verified there.
+            """, ct).ConfigureAwait(false);
+        await github.AddLabelsAsync(item.Number, ["status/ready"], ct).ConfigureAwait(false);
     }
 
     // Reset any operator item stuck in-progress past the staleness threshold (FR-044). The label's
@@ -412,6 +483,13 @@ public sealed class Tick(
         var worktrees = new WorktreeLifecycle(
             processes, config.Path, config.WorktreesRoot, ResolveClaudeConfig(), config.BaseBranch);
         var worktreePath = await worktrees.EnsureAsync(item.Number, ct).ConfigureAwait(false);
+        if (worktreePath is null)
+        {
+            log.WriteLine($"live sweep: #{item.Number} has no worktree and origin/{config.BaseBranch} " +
+                          "could not be fetched — leaving it for the next tick.");
+            return false;
+        }
+
         var tmux = new Adapters.Tmux.TmuxSessions(processes);
         var session = LiveSession.TmuxName(item.Number);
 
@@ -784,6 +862,19 @@ public sealed class Tick(
             return false;
         }
 
+        // Freshness first, before a single credit is spent (CLAUDE.md). Reviewing a branch that
+        // has fallen behind reviews a diff that will not be the one merged, so the branch is
+        // brought onto the latest base BEFORE it is judged — and if it cannot be, this stage does
+        // not run at all.
+        var freshness = await RefreshAgainstBaseAsync(item, worktreePath, ct).ConfigureAwait(false);
+        if (!BranchFreshness.MayContinue(freshness))
+        {
+            await ReportStaleAsync(item, prNumber.Value, freshness, ct).ConfigureAwait(false);
+            log.WriteLine($"review: #{item.Number} not current with {config.BaseBranch} " +
+                          $"({freshness}) — not reviewing or merging.");
+            return false;
+        }
+
         // Review runs in a FRESH session (FR-034a1) with the repo's own review prompt (FR-034d).
         // For the MVP it runs and records; a fuller build parses findings and blocks on irreversible
         // ones. The prompt is read from the repo, never from issue text.
@@ -832,7 +923,12 @@ public sealed class Tick(
 
             {StageOutcome.Excerpt(result.Stdout, "Review output")}
             """, ct).ConfigureAwait(false);
-        await github.AddLabelsAsync(item.Number, ["stage/review"], ct).ConfigureAwait(false);
+
+        // NOTE: the stage/review label is written by the caller, and only when this method returns
+        // true. Writing it here marked the stage complete before the gates below had run, so any
+        // gate that declined to merge (failed verification, a base that moved) left an item whose
+        // labels claimed every stage was done — derivation then found nothing to do and the item
+        // sat open forever with its PR unmerged.
 
         // Verification gate. A review is a Claude prompt: "review succeeded" means the review
         // PROCESS exited 0, not that the code builds. Without this, a clean-exiting review of
@@ -870,6 +966,19 @@ public sealed class Tick(
 
         if (config.AutoMerge)
         {
+            // Last look before merging. Review and verification take minutes, and the base can
+            // move under them — including by this runner merging another item. Only a branch that
+            // needs NO catching up at this moment is merged; anything else defers to a tick that
+            // reviews and verifies against the base as it now stands (CLAUDE.md).
+            var atMerge = await RefreshAgainstBaseAsync(item, worktreePath, ct).ConfigureAwait(false);
+            if (!BranchFreshness.MayMerge(atMerge))
+            {
+                await ReportStaleAsync(item, prNumber.Value, atMerge, ct).ConfigureAwait(false);
+                log.WriteLine($"merge: #{item.Number} no longer current with {config.BaseBranch} " +
+                              $"({atMerge}) — deferring the merge.");
+                return false;
+            }
+
             // Digest before merge (FR-033c) — the operator's account of a change they won't approve.
             await github.AddCommentAsync(item.Number,
                 $"""
@@ -882,9 +991,35 @@ public sealed class Tick(
                 - **Verified**: {(string.IsNullOrWhiteSpace(config.Verify)
                     ? "**no** — no verify command is configured, so this merged without building or testing"
                     : $"yes — `{config.Verify}` passed")}
+                - **Base**: up to date with `{config.BaseBranch}` at merge time
                 - **Merged**: yes (auto-merge on; spend under cap)
                 """, ct).ConfigureAwait(false);
-            await github.MergePullRequestAsync(prNumber.Value, ct).ConfigureAwait(false);
+
+            // GitHub has the final say. Branch protection on the base can refuse this merge —
+            // a required check still running, or the branch judged out of date on GitHub's side —
+            // and that refusal is a routine outcome, not a crash: the item goes back to ready and
+            // a later tick merges it once the gate is satisfied.
+            try
+            {
+                await github.MergePullRequestAsync(prNumber.Value, ct).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                await github.AddCommentAsync(item.Number,
+                    $"""
+                    <!-- spec-runner:v1 kind=merge-refused id=merge-refused-{item.Number} -->
+                    **GitHub refused the merge of PR #{prNumber}** — it was NOT merged and this item
+                    stays open. Branch protection is doing its job; the runner retries.
+
+                    ```
+                    {ex.Message}
+                    ```
+                    """, ct).ConfigureAwait(false);
+                await github.AddLabelsAsync(item.Number, ["status/ready"], ct).ConfigureAwait(false);
+                log.WriteLine($"merge of PR #{prNumber} refused by GitHub: {ex.Message}");
+                return false;
+            }
+
             log.WriteLine($"merged PR #{prNumber}.");
         }
         else

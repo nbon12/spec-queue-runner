@@ -74,6 +74,34 @@ the code and reports, modifying nothing.
 worktree and pushes it to your phone via Remote Control; outside them it posts the questions as
 one issue comment and waits. Either way, answering resolves the item and the pipeline resumes.
 
+### Branches: latest base in, no stale merges out
+
+Each item gets its own worktree and branch, and the base is always the *latest* base
+([CLAUDE.md](CLAUDE.md)):
+
+- **Cut from `origin/<base_branch>`, fetched immediately first.** If that fetch fails the branch
+  is not created at all — the item waits a tick rather than starting from a base of unknown age.
+- **Rebased before it is judged, and again before it lands.** If the base has moved, the branch is
+  replayed onto it and force-pushed with lease, so the review reads and the verify command builds
+  the code that would actually merge. A rebase that conflicts is aborted and reported; nothing
+  merges.
+- **The base moving during review defers the merge.** Checks that predate the move are not
+  evidence about the code after it, so the item goes back to `status/ready` and the next tick
+  reviews and verifies the rebased branch.
+
+Enforce the same rule on GitHub's side, so a hand-merge cannot bypass it either — a pull request
+branch that is behind the base becomes unmergeable until it is rebased:
+
+```bash
+deploy/branch-protection.sh nbon12/spec-queue-runner master
+```
+
+It applies a ruleset requiring a pull request, requiring the `verify` check
+([`.github/workflows/verify.yml`](.github/workflows/verify.yml)), and requiring **branches to be
+up to date before merging**, with no bypass actors — the runner is bound by it exactly as you are.
+It needs repository-admin rights, which the runner's token deliberately does not have, so you run
+it once yourself.
+
 ## Commands
 
 All run in the container. `deploy/run-tick.sh` is a thin wrapper that mounts the right things:
@@ -209,7 +237,7 @@ docker run --rm -v "$PWD":/src -w /src mcr.microsoft.com/dotnet/sdk:10.0 \
   bash -c 'dotnet build SpecRunner.slnx -c Debug && dotnet test SpecRunner.slnx -c Debug'
 ```
 
-**131 tests**, all offline and credit-free: unit (pure domain logic), integration (the real tick
+The whole suite is offline and credit-free: unit (pure domain logic), integration (the real tick
 against an in-memory GitHub and a scripted process runner), and property families —
 crash-convergence (kill after each side effect; re-run to quiescence; assert the end state matches
 the never-crashed one) and an injection canary (a non-operator's text must never reach the process
@@ -230,6 +258,7 @@ first-party interfaces, `Adapters/` wrap GitHub (Octokit), git, tmux, and Claude
 | Document | What it covers |
 |---|---|
 | [`.specify/memory/constitution.md`](.specify/memory/constitution.md) | the non-negotiable rules this project is governed by |
+| [`CLAUDE.md`](CLAUDE.md) | working conventions — branch management (latest base in, no stale merges out) and how to enforce it on GitHub |
 | [`specs/001-spec-queue-runner/spec.md`](specs/001-spec-queue-runner/spec.md) | the full requirements, plus a living implementation-status ledger |
 | [`deploy/README.md`](deploy/README.md) | the self-hosting instance: what's running now, and its trade-offs |
 | [`contracts/`](specs/001-spec-queue-runner/contracts/) | config schema, CLI surface, issue conventions, Claude invocation |
