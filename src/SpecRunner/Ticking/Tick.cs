@@ -475,7 +475,25 @@ public sealed class Tick(
         var claude = new ClaudeInvoker(processes, config.PermissionMode);
         log.WriteLine($"running {prompt} headlessly …");
         var result = await claude.RunAsync(prompt, worktreePath, ct).ConfigureAwait(false);
-        log.WriteLine($"{stage} exit={result.ExitCode}");
+        var outcome = StageOutcome.From(result);
+        log.WriteLine($"{stage}: {outcome} (exit {result.ExitCode})");
+
+        if (outcome is StageResult.Succeeded)
+        {
+            return;
+        }
+
+        // The stage's artifacts are its exit predicate, so a failed run simply does not advance
+        // derivation — but say so on the issue, or the item looks stalled for no visible reason.
+        await github.AddCommentAsync(item.Number,
+            $"""
+            <!-- spec-runner:v1 kind=stage-failed id=stage-failed-{item.Number}-{stage} -->
+            {(outcome is StageResult.RateLimited
+                ? $"**{stage} deferred** — usage limit reached; the runner will retry."
+                : $"**{stage} did not complete** — the run failed. The item stays at this stage.")}
+
+            {StageOutcome.Excerpt(result.Combined, "Run output")}
+            """, ct).ConfigureAwait(false);
     }
 
     private async Task RunImplementAsync(WorkItem item, Kind kind, string worktreePath, CancellationToken ct)
@@ -486,7 +504,28 @@ public sealed class Tick(
             $"# {item.Title}\n\n{item.Body}\n\nMake the change, then stop.";
         log.WriteLine("implement: running headless claude …");
         var result = await claude.RunAsync(prompt, worktreePath, ct).ConfigureAwait(false);
-        log.WriteLine($"implement exit={result.ExitCode}");
+        var outcome = StageOutcome.From(result);
+        log.WriteLine($"implement: {outcome} (exit {result.ExitCode})");
+
+        // A failed implement may still have written half a change. Committing and opening a PR on
+        // that would present partial work as finished, so stop here and let the next tick resume;
+        // the worktree persists, so nothing already written is lost (FR-014).
+        if (outcome is not StageResult.Succeeded)
+        {
+            await github.AddCommentAsync(item.Number,
+                $"""
+                <!-- spec-runner:v1 kind=implement-failed id=implement-failed-{item.Number} -->
+                {(outcome is StageResult.RateLimited
+                    ? "**Implementation deferred** — usage limit reached; the runner will retry."
+                    : "**Implementation did not complete** — the run failed. No pull request was opened.")}
+
+                Any partial work stays on the item's worktree; the next tick resumes from there.
+
+                {StageOutcome.Excerpt(result.Combined, "Run output")}
+                """, ct).ConfigureAwait(false);
+            log.WriteLine("implement: did not complete; no PR opened.");
+            return;
+        }
 
         var git = new Git(processes);
         if (!await git.HasChangesAsync(worktreePath, ct).ConfigureAwait(false))
@@ -549,14 +588,40 @@ public sealed class Tick(
             "drift, gaps, and dead requirements. DO NOT modify any file — this is read-only. Report findings only.";
         log.WriteLine($"audit: comparing {target} …");
         var result = await claude.RunAsync(prompt, worktreePath, ct).ConfigureAwait(false);
-        log.WriteLine($"audit exit={result.ExitCode}");
+        var outcome = StageOutcome.From(result);
+        log.WriteLine($"audit: {outcome} (exit {result.ExitCode})");
 
+        // An audit that did not run has no findings. Closing on it would retire the item having
+        // reported nothing — the failure mode that makes an audit theatre.
+        if (outcome is not StageResult.Succeeded)
+        {
+            var rateLimited = outcome is StageResult.RateLimited;
+            await github.AddCommentAsync(item.Number,
+                $"""
+                <!-- spec-runner:v1 kind=audit-failed id=audit-failed-{item.Number} -->
+                {(rateLimited
+                    ? "**Audit deferred** — usage limit reached; the runner will retry."
+                    : "**Audit did not complete** — the run failed, so nothing was checked.")}
+
+                This item stays open.
+
+                {StageOutcome.Excerpt(result.Combined, "Run output")}
+                """, ct).ConfigureAwait(false);
+            await github.AddLabelsAsync(item.Number, ["status/ready"], ct).ConfigureAwait(false);
+            log.WriteLine($"#{item.Number} audit did not complete; left open for retry.");
+            return;
+        }
+
+        // The findings ARE the product of an audit (FR-039), so they go in the comment. Previously
+        // this said "findings recorded" while recording none.
         await github.AddCommentAsync(item.Number,
             $"""
             <!-- spec-runner:v1 kind=audit id=audit-{item.Number} -->
             **Audit** — reviewed `{target}` (least recently audited). Read-only; nothing modified.
 
-            Findings recorded from the audit run. File follow-ups as new issues if action is needed.
+            {StageOutcome.Excerpt(result.Stdout, "Findings")}
+
+            File follow-ups as new issues if action is needed.
             """, ct).ConfigureAwait(false);
         await github.AddLabelsAsync(item.Number, ["stage/implement"], ct).ConfigureAwait(false);
         await github.CloseIssueAsync(item.Number, ct).ConfigureAwait(false);
@@ -599,12 +664,44 @@ public sealed class Tick(
             : "Review the changes on this branch against the base branch. Report findings.";
         log.WriteLine($"review: running against PR #{prNumber} …");
         var result = await claude.RunAsync(reviewInstruction, worktreePath, ct).ConfigureAwait(false);
-        log.WriteLine($"review exit={result.ExitCode}");
+        var outcome = StageOutcome.From(result);
+        log.WriteLine($"review: {outcome} (exit {result.ExitCode})");
 
-        // Review record (always posted, FR-034f).
+        // A review that did not run tells us NOTHING about the diff. Merging on it would assert a
+        // verification that never happened, so the item stays open with its PR intact and the next
+        // tick retries. Previously this path posted "no blocking finding" and merged regardless.
+        if (outcome is not StageResult.Succeeded)
+        {
+            var rateLimited = outcome is StageResult.RateLimited;
+            var headline = rateLimited
+                ? "**Code review deferred** — usage limit reached; the runner will retry."
+                : "**Code review did not complete** — the run failed, so the change is NOT verified.";
+
+            await github.AddCommentAsync(item.Number,
+                $"""
+                <!-- spec-runner:v1 kind=review-failed id=review-failed-{item.Number} -->
+                {headline}
+
+                PR #{prNumber} was **not merged** and this item stays open.
+
+                {StageOutcome.Excerpt(result.Combined, "Run output")}
+                """, ct).ConfigureAwait(false);
+
+            // Back to ready so a later tick picks it up again (FR-043 for the rate-limit case).
+            await github.AddLabelsAsync(item.Number, ["status/ready"], ct).ConfigureAwait(false);
+            log.WriteLine($"review: not merging #{prNumber}; item left open for retry.");
+            return;
+        }
+
+        // Review record (always posted, FR-034f). It reports what the review SAID; it does not
+        // assert an absence of findings, because nothing here parses findings yet.
         await github.AddCommentAsync(item.Number,
-            $"<!-- spec-runner:v1 kind=review id=review-{item.Number} -->\n**Code review** — completed; no blocking finding recorded.",
-            ct).ConfigureAwait(false);
+            $"""
+            <!-- spec-runner:v1 kind=review id=review-{item.Number} -->
+            **Code review** — ran against PR #{prNumber}.
+
+            {StageOutcome.Excerpt(result.Stdout, "Review output")}
+            """, ct).ConfigureAwait(false);
         await github.AddLabelsAsync(item.Number, ["stage/review"], ct).ConfigureAwait(false);
 
         if (config.AutoMerge)
@@ -616,7 +713,8 @@ public sealed class Tick(
                 **Digest** — implemented and reviewed, merging.
 
                 - **What changed**: {item.Title}
-                - **Review**: completed with no blocking finding
+                - **Review**: completed; output recorded above (findings are not yet parsed
+                  automatically, so read it if the change matters)
                 - **Merged**: yes (auto-merge on; spend under cap)
                 """, ct).ConfigureAwait(false);
             await github.MergePullRequestAsync(prNumber.Value, ct).ConfigureAwait(false);
