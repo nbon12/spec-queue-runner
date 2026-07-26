@@ -1,0 +1,32 @@
+# Instance config: the spec-queue-runner pointed at its own repository.
+# All paths are CONTAINER paths — they resolve inside the runner image, not on the host.
+# One persistent volume (sr-self-home) is mounted at /home/runner and holds .claude, the
+# clone, the worktrees, and the lock/log — so the lock mutually-excludes overlapping ticks.
+
+slug            = "nbon12/spec-queue-runner"
+path            = "/home/runner/clone"        # the clone worktrees hang off
+worktrees_root  = "/home/runner/work"         # one folder per in-flight item
+base_branch     = "master"                    # this repo's default branch
+
+operator_login  = "nbon12"                    # resolved to a numeric id at startup (fail-closed)
+
+tick_interval   = 300                         # seconds; mirrors the launchd StartInterval
+waking_hours    = "08:00-23:00"               # local time; live sessions only in this window
+stale_hours     = 2                           # in-progress older than this is reclaimed
+decision_cap    = 5                           # autonomous decisions before a run blocks
+
+permission_mode = "acceptEdits"
+review_prompt   = ".specify/prompts/code-review.md"   # repo-relative; never from issue text
+
+auto_merge      = true                        # runner merges its own PR after a clean review
+spend_cap       = 100                         # USD; estimated spend above this always blocks
+
+claude_config_path = "/home/runner/.claude.json"
+log             = "/home/runner/state/spec-queue-runner.log"
+lock            = "/home/runner/state/spec-queue-runner.lock"
+
+[secret]
+github_pat_file = "/run/secrets/github_pat"   # mounted secret file; NEVER stored in this config
+
+[irreversible]
+protected_paths = ["infra/**", "**/migrations/**"]
