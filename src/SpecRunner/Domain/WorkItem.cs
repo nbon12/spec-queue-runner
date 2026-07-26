@@ -15,28 +15,4 @@ public sealed record WorkItem(
     IReadOnlyList<string> Labels)
 {
     public bool HasLabel(string label) => Labels.Contains(label);
-
-    /// <summary>The <c>Targets:</c> line, if present (issue-conventions.md). Empty when none.</summary>
-    public IReadOnlyList<string> Targets
-    {
-        get
-        {
-            foreach (var line in Body.Split('\n'))
-            {
-                var trimmed = line.Trim();
-                if (trimmed.StartsWith("Targets:", StringComparison.OrdinalIgnoreCase))
-                {
-                    var rest = trimmed["Targets:".Length..].Trim();
-                    if (rest.Length == 0 || rest.Equals("none", StringComparison.OrdinalIgnoreCase))
-                    {
-                        return [];
-                    }
-
-                    return rest.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-                }
-            }
-
-            return [];
-        }
-    }
 }

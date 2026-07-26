@@ -75,7 +75,8 @@ Projection of one issue. Built fresh each tick; never cached across ticks.
 | `Status` | QueueStatus | `status/*` label + open/closed | |
 | `StageLabel` | Stage? | `stage/*` label | **a cache**; predicate is authoritative (§3) |
 | `PinnedStage` | Stage? | manually applied label | overrides computed stage (FR-017) |
-| `Targets` | string[] | `Targets:` body line | readiness gate (FR-010) |
+| `Targets` | string[] | `Targets:` body line | intake hint only (FR-016); no scheduling effect |
+| `BlockedBy` | BlockingIssue[] | GitHub issue relationship | readiness gate (FR-010); open blockers only |
 | `Recurring` | string? | `Recurring:` body line | successor filing (FR-042) |
 | `LiveSessionId` | string? | `Live session:` comment | resume key (FR-022/024) |
 | `AuthorId` | long | issue author's numeric ID | allowlist check (R5, FR-005) |
@@ -87,7 +88,9 @@ Projection of one issue. Built fresh each tick; never cached across ticks.
 - An item whose `AuthorId` ≠ the resolved operator ID is **excluded entirely** — not loaded,
   not prompted with, not replied to (FR-005). Same rule applies per-comment.
 - `Targets` entries must resolve to spec directories; unresolvable targets block intake only
-  when intent is unrecoverable (FR-016).
+  when intent is unrecoverable (FR-016). They never hold an item — no body text does.
+- `BlockedBy` is fetched per candidate, and only after the operator check, so a non-operator
+  issue provokes no API call (FR-005).
 - `Recurring` is carried forward verbatim into the successor's body (FR-042).
 
 ### DecisionRecord

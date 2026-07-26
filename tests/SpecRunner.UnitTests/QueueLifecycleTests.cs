@@ -32,28 +32,34 @@ public class StaleReclaimTests
 
 public class ReadinessTests
 {
-    private static WorkItem WithTargets(string body) => new(1, "t", body, "u", 1, []);
-
     [Fact]
-    public void Item_with_all_targets_on_main_is_schedulable()
+    public void No_dependencies_is_schedulable()
     {
-        var item = WithTargets("Targets: specs/a, specs/b");
-        Assert.True(Readiness.IsSchedulable(item, new HashSet<string> { "specs/a", "specs/b" }));
+        Assert.True(Readiness.IsSchedulable([]));
     }
 
     [Fact]
-    public void Item_with_a_missing_target_is_held()
+    public void One_open_blocker_holds()
     {
-        var item = WithTargets("Targets: specs/a, specs/b");
-        var onMain = new HashSet<string> { "specs/a" };
-        Assert.False(Readiness.IsSchedulable(item, onMain));
-        Assert.Equal(["specs/b"], Readiness.MissingTargets(item, onMain));
+        Assert.False(Readiness.IsSchedulable([new BlockingIssue(12, "land the widget spec")]));
     }
 
     [Fact]
-    public void No_targets_is_always_schedulable()
+    public void Several_open_blockers_hold_and_are_all_named()
     {
-        Assert.True(Readiness.IsSchedulable(WithTargets("Targets: none"), new HashSet<string>()));
+        List<BlockingIssue> blockers = [new(12, "spec"), new(13, "schema")];
+        Assert.False(Readiness.IsSchedulable(blockers));
+        Assert.Equal("#12, #13", Readiness.Describe(blockers));
+    }
+
+    [Fact]
+    public void Closing_the_last_blocker_releases_the_item()
+    {
+        // The port hands back only OPEN blockers, so a fully-closed dependency set is an empty
+        // list — the item is schedulable again with no operator action (FR-010).
+        List<BlockingIssue> stillBlocked = [new(12, "spec")];
+        Assert.False(Readiness.IsSchedulable(stillBlocked));
+        Assert.True(Readiness.IsSchedulable([]));
     }
 }
 

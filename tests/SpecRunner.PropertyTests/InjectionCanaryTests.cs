@@ -44,7 +44,7 @@ public class InjectionCanaryTests
             // A malicious, lower-numbered ready issue authored by someone else.
             github.AddIssue(1, "innocent title", Canary, "attacker", AttackerId, "status/ready");
             // The operator's own ready item, already classified so the tick reaches implement.
-            github.AddIssue(2, "add a file", "Targets: none", "operator", OperatorId,
+            github.AddIssue(2, "add a file", "", "operator", OperatorId,
                 "status/ready", "kind/chore", "stage/intake");
 
             var processes = new RecordingProcessRunner();
@@ -58,6 +58,9 @@ public class InjectionCanaryTests
             Assert.DoesNotContain(
                 processes.AllRecordedStrings(),
                 s => s.Contains(Canary, StringComparison.Ordinal));
+            // Held-gating must not query the attacker's issue either: the dependency lookup is
+            // reached only after the operator check, so #1 costs no API call at all (FR-005).
+            Assert.DoesNotContain(1, github.BlockerQueries);
         }
         finally
         {
@@ -84,6 +87,7 @@ public class InjectionCanaryTests
             Assert.Empty(github.Issue(1).Comments);
             Assert.Equal(["status/ready"], github.Issue(1).Labels);
             Assert.Empty(processes.Invocations);
+            Assert.Empty(github.BlockerQueries);
         }
         finally
         {

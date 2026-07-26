@@ -12,6 +12,7 @@ public sealed class InMemoryGitHubClient : IGitHubClient
     private readonly Dictionary<string, long> _users = new(StringComparer.Ordinal);
     private readonly Dictionary<int, MutableIssue> _issues = new();
     private readonly Dictionary<(int, string), DateTimeOffset> _labeledAt = new();
+    private readonly Dictionary<int, List<int>> _blockedBy = new();
 
     /// <summary>Clock for label-application timestamps; tests override for determinism.</summary>
     public Func<DateTimeOffset> Now { get; set; } = () => DateTimeOffset.UtcNow;
@@ -44,6 +45,45 @@ public sealed class InMemoryGitHubClient : IGitHubClient
     }
 
     public MutableIssue Issue(int number) => _issues[number];
+
+    /// <summary>
+    /// Record GitHub's native "blocked by" relationship: <paramref name="number"/> is blocked by
+    /// each of <paramref name="blockers"/>. Whether a blocker still holds follows from its own
+    /// open/closed state, exactly as on GitHub — closing it releases the dependent.
+    /// </summary>
+    public void AddBlockedBy(int number, params int[] blockers)
+    {
+        if (!_blockedBy.TryGetValue(number, out var existing))
+        {
+            existing = new List<int>();
+            _blockedBy[number] = existing;
+        }
+
+        existing.AddRange(blockers);
+    }
+
+    /// <summary>Every issue whose dependencies were queried, in order — lets the injection canary
+    /// assert that a non-operator issue provoked no API call at all.</summary>
+    public List<int> BlockerQueries { get; } = [];
+
+    public Task<IReadOnlyList<BlockingIssue>> GetOpenBlockersAsync(int number, CancellationToken ct = default)
+    {
+        BlockerQueries.Add(number);
+        var open = new List<BlockingIssue>();
+        if (_blockedBy.TryGetValue(number, out var blockers))
+        {
+            foreach (var b in blockers)
+            {
+                // Closed blockers are filtered out here, exactly as the GraphQL adapter does.
+                if (_issues.TryGetValue(b, out var blocker) && blocker.Open)
+                {
+                    open.Add(new BlockingIssue(blocker.Number, blocker.Title));
+                }
+            }
+        }
+
+        return Task.FromResult<IReadOnlyList<BlockingIssue>>(open);
+    }
 
     public Task<long?> ResolveUserIdAsync(string login, CancellationToken ct = default) =>
         Task.FromResult(_users.TryGetValue(login, out var id) ? id : (long?)null);

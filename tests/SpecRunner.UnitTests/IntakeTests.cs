@@ -3,7 +3,7 @@ using Xunit;
 
 namespace SpecRunner.UnitTests;
 
-/// <summary>Tier 1: intake kind inference and Targets parsing (FR-016, issue-conventions.md).</summary>
+/// <summary>Tier 1: intake kind inference (FR-016, issue-conventions.md).</summary>
 public class IntakeTests
 {
     private static WorkItem Item(string title, string body) =>
@@ -45,12 +45,11 @@ public class IntakeTests
     }
 
     [Theory]
-    [InlineData("Targets: none", 0)]
-    [InlineData("Targets: specs/a", 1)]
-    [InlineData("Targets: specs/a, specs/b", 2)]
-    [InlineData("no targets line at all", 0)]
-    public void Targets_line_parses_to_the_right_count(string body, int expected)
+    [InlineData("Targets: none")]
+    [InlineData("no targets line at all")]
+    public void Absent_or_empty_targets_line_is_no_target(string body)
     {
-        Assert.Equal(expected, Item("t", body).Targets.Count);
+        // `Targets:` is an intake hint and nothing else — it never gates scheduling (FR-010).
+        Assert.Equal(Kind.Chore, Intake.Classify(Item("Add a banner line", body)).Kind);
     }
 }

@@ -150,7 +150,7 @@ On its own recurring schedule, the runner selects the spec that has gone longest
 - **FR-007**: Every tick MUST collect and process comment replies on all currently-waiting and currently-live items before selecting new work.
 - **FR-008**: Each collected reply MUST be judged: a resolving reply unblocks the item (returns it to ready); a merely conversational reply receives a response comment and leaves the item waiting.
 - **FR-009**: Work selection MUST pick the lowest-numbered open issue labelled ready, and a tick MUST perform work on at most one item.
-- **FR-010**: An item MUST NOT be schedulable while any spec it targets is absent from the main branch; such an item MUST be labelled held with a comment stating what it is waiting for, and MUST be promoted back to ready automatically once that target lands on main.
+- **FR-010**: An item MUST NOT be schedulable while any issue it is *blocked by* — GitHub's native issue-dependency relationship — is still open; such an item MUST be skipped and left unmodified, with the blocking issue numbers recorded in the tick log, and MUST become schedulable again automatically once every blocker is closed, with no operator action. Issue body text MUST NOT affect scheduling in any way.
 - **FR-011**: The system MUST label an item in-progress before invoking Claude Code on it.
 
 **Worktrees**
@@ -308,6 +308,7 @@ On its own recurring schedule, the runner selects the spec that has gone longest
 **Design decisions that refine the requirements:**
 
 - **Live-block resolution (FR-024/019)** is detected from durable state, not a chat scrape: a block is resolved when either the session has written its answers into the worktree (the clarify markers clear) **or** the operator posts a plain, non-marker comment. Either signal reaps the now-redundant tmux session and returns the item to the pipeline.
+- **Held-gating (FR-010)** reads GitHub's native *blocked by* issue relationship, never the issue body. Issue dependencies have no REST surface, so the adapter issues one GraphQL `blockedBy` query alongside the Octokit REST client, on the same token (constitution §2). It runs per candidate and only after the operator check, so a non-operator issue provokes no call. A held item is skipped and left untouched, with its blockers named by number in the tick log; the check re-runs each tick, so closing the last blocker releases the item with no operator action.
 - **Stale-reclaim timing (FR-044)** reads the age of the `status/in-progress` label from the issue's own event timeline (`GetLabelAppliedAt`), so no timestamp is stored runner-side; live and held items carry different labels and are exempt by construction.
 - **Credential monitoring (FR-052b)** checks whether the claude.ai credential is still
   *refreshable*, not whether it is *fresh*. Measured behaviour: the access token lives ~12 hours

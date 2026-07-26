@@ -1,21 +1,23 @@
 namespace SpecRunner.Domain;
 
 /// <summary>
-/// Held-gating (FR-010): an item is not schedulable while any spec it targets is absent from
-/// main. Dependency ordering falls out of integration, not a scheduler — an amendment to a spec
-/// still on an unmerged PR simply holds. Pure over the item's targets and the set of specs known
-/// to be on main.
+/// One issue that another is blocked by — GitHub's native dependency relationship, projected to
+/// what held-gating needs. Only blockers that are still open are ever represented here.
+/// </summary>
+public sealed record BlockingIssue(int Number, string Title);
+
+/// <summary>
+/// Held-gating (FR-010): an item is not schedulable while any issue it is blocked by is still
+/// open. The dependency is a structured GitHub relationship, not prose — it is expressed in the
+/// issue sidebar and cannot be triggered by pasted text. Pure over already-fetched blockers; the
+/// GraphQL query that fetches them belongs to the adapter.
 /// </summary>
 public static class Readiness
 {
-    /// <summary>
-    /// The targets that are NOT yet on main, given the paths present on main. Empty ⇒ schedulable.
-    /// </summary>
-    public static IReadOnlyList<string> MissingTargets(WorkItem item, ISet<string> targetsOnMain)
-    {
-        return item.Targets.Where(t => !targetsOnMain.Contains(t)).ToList();
-    }
+    /// <summary>No open blockers ⇒ schedulable. An item with no dependencies is unblocked.</summary>
+    public static bool IsSchedulable(IReadOnlyList<BlockingIssue> openBlockers) => openBlockers.Count == 0;
 
-    public static bool IsSchedulable(WorkItem item, ISet<string> targetsOnMain) =>
-        MissingTargets(item, targetsOnMain).Count == 0;
+    /// <summary>The blocking issues by number, for the held log line: <c>#12, #13</c>.</summary>
+    public static string Describe(IReadOnlyList<BlockingIssue> openBlockers) =>
+        string.Join(", ", openBlockers.Select(b => $"#{b.Number}"));
 }

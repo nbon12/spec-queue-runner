@@ -70,11 +70,11 @@ public sealed class Tick(
             return (int)Cli.ExitCode.Ok;
         }
 
-        // Work selection: lowest-numbered open status/ready issue (FR-009). An item is skipped if
-        // it targets a spec not yet on the base branch — held-gating (FR-010); dependency order
-        // falls out of integration, not a scheduler.
+        // Work selection: lowest-numbered open status/ready issue (FR-009). An item is skipped
+        // while any issue it is blocked by is still open — held-gating (FR-010) over GitHub's
+        // native dependency relationship; dependency order falls out of the book of work, not a
+        // scheduler. A held item is left untouched; closing its last blocker releases it.
         var ready = await github.ListOpenIssuesWithLabelAsync("status/ready", ct).ConfigureAwait(false);
-        HashSet<string>? targetsOnBase = null; // computed lazily: never for an attacker-only queue.
         WorkItem? item = null;
         foreach (var candidate in ready)
         {
@@ -93,14 +93,12 @@ public sealed class Tick(
                 continue;
             }
 
-            // Only touch the process boundary once we have an operator-authored candidate — an
-            // attacker's issue never causes so much as a git call (injection canary).
-            targetsOnBase ??= await BaseTargetsAsync(ct).ConfigureAwait(false);
-
-            var missing = Readiness.MissingTargets(candidate, targetsOnBase);
-            if (missing.Count > 0)
+            // Only ask GitHub about dependencies once we have an operator-authored candidate — an
+            // attacker's issue never causes so much as an extra API call (injection canary).
+            var blockers = await github.GetOpenBlockersAsync(candidate.Number, ct).ConfigureAwait(false);
+            if (!Readiness.IsSchedulable(blockers))
             {
-                log.WriteLine($"#{candidate.Number} held — targets not on base: {string.Join(", ", missing)}.");
+                log.WriteLine($"#{candidate.Number} held — blocked by {Readiness.Describe(blockers)}.");
                 continue;
             }
 
@@ -399,24 +397,6 @@ public sealed class Tick(
         await github.AddLabelsAsync(item.Number, ["stage/clarify", "status/waiting"], ct).ConfigureAwait(false);
         await github.RemoveLabelAsync(item.Number, "status/ready", ct).ConfigureAwait(false);
         log.WriteLine($"clarify: posted {questions.Count} question(s); waiting on the operator.");
-    }
-
-    // The spec paths present on the base branch, for held-gating. Read from the clone with
-    // ls-tree (no checkout). If the clone or branch is unreadable, return empty — every targeting
-    // item then holds, which is the safe direction (never schedule against an unknown base).
-    private async Task<HashSet<string>> BaseTargetsAsync(CancellationToken ct)
-    {
-        try
-        {
-            var paths = await new Git(processes)
-                .ListPathsAsync(config.Path, config.BaseBranch, ct).ConfigureAwait(false);
-            return new HashSet<string>(paths, StringComparer.Ordinal);
-        }
-        catch (Exception ex)
-        {
-            log.WriteLine($"held-gating: could not list base paths ({ex.Message}); targeting items will hold.");
-            return new HashSet<string>(StringComparer.Ordinal);
-        }
     }
 
     private string ResolveClaudeConfig() =>
