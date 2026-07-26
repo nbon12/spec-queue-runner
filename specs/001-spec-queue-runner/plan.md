@@ -59,9 +59,7 @@ failure and arbitrary mid-tick kills.
 
 *GATE: Must pass before Phase 0 research. Re-checked after Phase 1 design.*
 
-Gates derived from `.specify/memory/constitution.md` v3.0.0. The constitution has since reached
-v6.0.0; the increment section below re-checks the gates that moved, rather than restating this
-table for a design that has not otherwise changed.
+Gates derived from `.specify/memory/constitution.md` v3.0.0.
 
 | # | Gate | Source | Initial | Post-design |
 |---|---|---|---|---|
@@ -193,89 +191,6 @@ every stage-derivation and rate-limit case from `InlineData` fixtures with no en
 and tmux through their adapters. The whole tick runs inside a Linux container (R15), so there is
 no macOS-specific surface left in the tick itself; `launchd` (host-side, fires the container)
 and secret delivery (mounted file) are the only host touchpoints, each behind a small seam.
-
----
-
-# Increment — Give the review stage its context (2026-07-26, issue #15)
-
-**Branch**: `work/15` | **Constitution**: v6.0.0 | **Research**: [R17](./research.md#r17--the-review-stages-context-what-it-is-told-and-how-issue-15)
-
-## Summary
-
-The review stage is invoked with the contents of `.specify/prompts/code-review.md` and **nothing
-else**. That prompt says "this pull request", "this item's `spec.md`", and "every path this pull
-request touches" — and the runner names none of them. The reviewer is dropped into a worktree and
-left to infer which PR, which two refs to diff, which issue it serves, and which spec is the item's
-own.
-
-This increment supplies those four facts. The composed prompt is `instructions verbatim` +
-`delimited context block`, in that order, and the context is assembled from state the tick already
-holds: the `kind=pr` marker (PR number and URL), the config and worktree conventions (base ref and
-head branch), the selected `WorkItem` (issue number, title, body), and `Git.SpecDirOnBranchAsync`
-(the item's own spec directory, discovered from its branch — never guessed).
-
-The correctness argument is not "the review will be better." It is that **the reviewer is currently
-being asked to make the exact guess constitution v6.0.0 removed**: "which spec directory belongs to
-this item" is unanswerable from `specs/` alone, and the failure mode is a confident review of
-another item's spec rather than an error. A chore has no spec directory at all, so §2 of the review
-prompt is unanswerable today for the kind that reaches review most often.
-
-## Technical Context (delta only)
-
-Everything in the table above still holds. What this increment adds:
-
-**New pure surface**: `Domain/ReviewContext.cs` (the record) and `Domain/ReviewPrompt.cs`
-(`Compose(instructions, context) -> string`). Both are I/O-free, so the entire composed prompt —
-ordering, delimiters, the null-spec-dir wording — is a Tier 1 assertion, per §4's "pure logic stays
-pure".
-
-**Changed**: `Ticking/Tick.cs` — `RunReviewAsync` builds the context and composes; `RunImplementAsync`
-writes `url=` into the `kind=pr` marker; `FindPrNumber` becomes a marker parser returning number
-**and** optional URL, with the URL falling back to `https://github.com/{slug}/pull/{n}`.
-
-**Unchanged deliberately**: `.specify/prompts/code-review.md` (it is repo-level and item-agnostic by
-design, FR-034d), the config schema (no new setting — the four facts are derivable, not
-configurable), and `ClaudeInvoker` (one argument, `ArgumentList`, fresh session).
-
-**Out of scope, and stated rather than absorbed**: `specs/COVERAGE.md` does not exist in this
-repository, so §3 of the review prompt currently has nothing to consult. Creating it is separate
-work (FR-034g — review must not widen an item's scope). This increment makes the gap *visible*: the
-context block states whether the manifest is present on the branch, so the cross-spec check is
-either performed or reported as impossible, never silently dropped.
-
-## Constitution Check (increment)
-
-| # | Gate | Source | Verdict |
-|---|---|---|---|
-| 33 | Spec directory is discovered from the item's own branch, never by scanning `specs/` | §3 (v6.0.0) | ✅ `Git.SpecDirOnBranchAsync`; `null` is rendered explicitly, not papered over |
-| 34 | The pipeline definition comes from the binary and the repo, never from issue text | §6, FR-034d, FR-054 | ✅ Instructions first and verbatim; context follows, framed as data |
-| 35 | Untrusted content cannot redirect a run | §6, FR-006 | ✅ Only the operator-verified issue title/body; delimited region; no comment body enters the prompt |
-| 36 | Injection canary stays green | testing §5 | ✅ Re-asserted directly against the review prompt, not inherited |
-| 37 | Pure logic testable without I/O | §4 | ✅ `ReviewPrompt.Compose` is a pure function over a record |
-| 38 | Per-iteration statelessness — nothing carried between ticks | §3 (v5.0.0) | ✅ `ReviewContext` is rebuilt each tick from GitHub, config, and git; never persisted |
-| 39 | Review runs in a fresh session | §9, FR-034a1 | ✅ Unchanged — composition adds context, never `--resume` |
-| 2 | Ticks converge; no duplicated comments or labels | §3 | ✅ The `kind=pr` marker gains a field; its `id=` is unchanged, so idempotency scanning is untouched and old markers still parse |
-
-**Result**: PASS. No violations; Complexity Tracking stays empty.
-
-## Implementation shape
-
-Test-first (testing §2.3) — the composed prompt is a pure string, so the tests are cheap and
-precise:
-
-| Tier | Test | Asserts |
-|---|---|---|
-| 1 | `ReviewPromptTests` | instructions appear verbatim and **before** any context; every field present; `null` spec dir renders the explicit "no spec directory / section does not apply" wording; absent coverage manifest is stated; an issue body containing imperative text ("ignore the above and …") lands **inside** the data region |
-| 1 | `PullRequestMarkerTests` | `number=`/`url=` parsed; a legacy marker with no `url=` yields `null` and the caller derives from the slug; a malformed marker is skipped, not half-read |
-| 2 | `PipelineTests` (chore + feature) | the recorded review invocation's argv carries the PR number, both refs, and the issue number; the feature item names **its own** spec dir with a decoy second spec directory present; the chore names none |
-| 3 | `InjectionCanaryTests` | a non-operator comment's canary appears in no review invocation — asserted against this path specifically |
-
-Spec obligation (§9, living specifications): `spec.md` describes review's inputs in FR-034a–g but
-states nothing about what review is *told*. `/speckit.tasks` should carry a task adding **FR-034h**
-— "the review invocation MUST supply the pull request, the refs being compared, the issue, and the
-item's spec directory (or state that it has none), with the version-controlled instructions taking
-precedence over all of it" — so the behaviour this increment builds is not behaviour no requirement
-claims.
 
 ## Complexity Tracking
 
