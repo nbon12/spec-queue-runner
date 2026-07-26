@@ -15,12 +15,16 @@ RUN dotnet publish src/SpecRunner/SpecRunner.csproj \
         -o /app
 
 # ---- runtime stage ----
-FROM debian:bookworm-slim AS runtime
+# Based on the SDK, not debian-slim, so the runner can BUILD AND TEST what it writes before
+# merging it (the `verify` config command). The tick binary is self-contained and needs no
+# runtime here — the SDK is present for verification only. That costs image size, and it does
+# tie this image to .NET repositories; an instance serving a different stack wants a different
+# base with that stack's toolchain and its own `verify` command.
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS runtime
 
-# git: worktrees (≥2.5). tmux: live sessions. ripgrep: Claude Code search.
-# tini: a real PID 1 that reaps children — the tick spawns claude/tmux/git every run,
-# and without reaping those become zombies (observed in the probe container).
-# The .NET runtime is NOT installed — the binary is self-contained.
+# git: worktrees (≥2.5) — already present in the SDK image. tmux: live sessions.
+# ripgrep: Claude Code search. tini: a real PID 1 that reaps children — the tick spawns
+# claude/tmux/git every run, and without reaping those become zombies (observed in the probe).
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates curl git tmux ripgrep tini \
     && rm -rf /var/lib/apt/lists/*

@@ -32,10 +32,23 @@ public sealed class WorktreeLifecycle(
         if (!Directory.Exists(path))
         {
             Directory.CreateDirectory(worktreesRoot);
-            // Branch off main if new; -B is safe if the branch already exists from a prior life.
+
+            // Refresh the clone before branching. Nothing else fetches, so without this every new
+            // item branches from whatever the clone held when it was first created — a base that
+            // grows staler with every merge, including the runner's own. A fetch failure is not
+            // fatal (offline, transient): branching from a stale base still works, so log via the
+            // exit code and carry on rather than wedging the queue.
+            var fetch = await git.RunAsync(
+                "git", ["fetch", "origin", baseBranch], workingDirectory: clonePath, ct: ct)
+                .ConfigureAwait(false);
+
+            // Branch from the REMOTE ref when the fetch succeeded, so a stale local branch cannot
+            // silently determine the base; fall back to the local ref when offline.
+            var startPoint = fetch.ExitCode == 0 ? $"origin/{baseBranch}" : baseBranch;
+
             var result = await git.RunAsync(
                 "git",
-                ["worktree", "add", "-B", branch, path, baseBranch],
+                ["worktree", "add", "-B", branch, path, startPoint],
                 workingDirectory: clonePath,
                 ct: ct).ConfigureAwait(false);
 

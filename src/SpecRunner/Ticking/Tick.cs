@@ -704,6 +704,40 @@ public sealed class Tick(
             """, ct).ConfigureAwait(false);
         await github.AddLabelsAsync(item.Number, ["stage/review"], ct).ConfigureAwait(false);
 
+        // Verification gate. A review is a Claude prompt: "review succeeded" means the review
+        // PROCESS exited 0, not that the code builds. Without this, a clean-exiting review of
+        // non-compiling code merges it. Reviewing and verifying are different claims.
+        if (config.AutoMerge && !string.IsNullOrWhiteSpace(config.Verify))
+        {
+            log.WriteLine($"verify: running `{config.Verify}` …");
+            var verification = await processes.RunAsync(
+                "bash", ["-lc", config.Verify], worktreePath, ct: ct).ConfigureAwait(false);
+
+            if (verification.ExitCode != 0)
+            {
+                log.WriteLine($"verify: FAILED (exit {verification.ExitCode}) — not merging PR #{prNumber}.");
+                await github.AddCommentAsync(item.Number,
+                    $"""
+                    <!-- spec-runner:v1 kind=verify-failed id=verify-failed-{item.Number} -->
+                    **Verification failed** — the change does not build or its tests do not pass, so
+                    PR #{prNumber} was **not merged** and this item stays open.
+
+                    Command: `{config.Verify}`
+
+                    {StageOutcome.Excerpt(verification.Combined, "Verification output")}
+                    """, ct).ConfigureAwait(false);
+                await github.AddLabelsAsync(item.Number, ["status/ready"], ct).ConfigureAwait(false);
+                return;
+            }
+
+            log.WriteLine("verify: passed.");
+        }
+        else if (config.AutoMerge)
+        {
+            // Say it out loud: auto-merge with no verification is a materially weaker gate.
+            log.WriteLine("verify: NO verify command configured — merging without building or testing.");
+        }
+
         if (config.AutoMerge)
         {
             // Digest before merge (FR-033c) — the operator's account of a change they won't approve.
@@ -715,6 +749,9 @@ public sealed class Tick(
                 - **What changed**: {item.Title}
                 - **Review**: completed; output recorded above (findings are not yet parsed
                   automatically, so read it if the change matters)
+                - **Verified**: {(string.IsNullOrWhiteSpace(config.Verify)
+                    ? "**no** — no verify command is configured, so this merged without building or testing"
+                    : $"yes — `{config.Verify}` passed")}
                 - **Merged**: yes (auto-merge on; spend under cap)
                 """, ct).ConfigureAwait(false);
             await github.MergePullRequestAsync(prNumber.Value, ct).ConfigureAwait(false);

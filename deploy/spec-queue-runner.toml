@@ -18,6 +18,10 @@ decision_cap    = 5                           # autonomous decisions before a ru
 permission_mode = "acceptEdits"
 review_prompt   = ".specify/prompts/code-review.md"   # repo-relative; never from issue text
 
+# Verification gate: run before merging, in the item's worktree. Non-zero blocks the merge.
+# A review is a Claude prompt and proves nothing compiles; this does.
+verify          = "dotnet build SpecRunner.slnx -c Debug && dotnet test SpecRunner.slnx -c Debug"
+
 auto_merge      = true                        # runner merges its own PR after a clean review
 spend_cap       = 100                         # USD; estimated spend above this always blocks
 

@@ -41,6 +41,7 @@ public static class ConfigLoader
             DecisionCap = Int("decision_cap", 5),
             PermissionMode = Str("permission_mode", "acceptEdits"),
             ReviewPrompt = Str("review_prompt", ".specify/prompts/code-review.md"),
+            Verify = Str("verify"),
             AutoMerge = Bool("auto_merge", true),
             SpendCap = Int("spend_cap", 100),
             GitHubPatFile = patFile,

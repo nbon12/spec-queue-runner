@@ -17,6 +17,14 @@ public sealed record InstanceConfig
     public int DecisionCap { get; init; } = 5;
     public string PermissionMode { get; init; } = "acceptEdits";
     public string ReviewPrompt { get; init; } = ".specify/prompts/code-review.md";
+
+    /// <summary>
+    /// Shell command run in the item's worktree before merging (FR-034g). Non-zero blocks the
+    /// merge exactly as a failed review does. Empty means NO verification — the runner may then
+    /// merge code that does not build, so it is logged loudly rather than passing silently.
+    /// The toolchain it needs must exist in the image.
+    /// </summary>
+    public string Verify { get; init; } = string.Empty;
     public bool AutoMerge { get; init; } = true;
     public int SpendCap { get; init; } = 100;
     public required string GitHubPatFile { get; init; }

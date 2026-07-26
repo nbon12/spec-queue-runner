@@ -122,6 +122,68 @@ public class StageFailureTests
     }
 
     [Fact]
+    public async Task Failing_verification_blocks_the_merge_even_when_review_succeeded()
+    {
+        // The gap this closes: a review is a Claude prompt, so "review succeeded" means the
+        // review PROCESS exited 0 — not that the code compiles. Without this gate, a clean
+        // review of non-compiling code merged it.
+        var tmp = Directory.CreateTempSubdirectory("verifyfail");
+        try
+        {
+            var github = ItemAwaitingReview(20);
+            var config = Config(tmp.FullName) with { Verify = "make check" };
+
+            var processes = new RecordingProcessRunner
+            {
+                Respond = inv =>
+                    inv.FileName == "claude" ? new ProcessResult(0, "Looks fine to me.", "")
+                    : inv.FileName == "bash" ? new ProcessResult(1, "", "error CS0104: ambiguous reference")
+                    : new ProcessResult(0, "", ""),
+            };
+
+            await new Tick(config, github, processes, TextWriter.Null).RunAsync();
+
+            Assert.Empty(github.MergedPrs);                    // review passed; the build did not
+            Assert.True(github.Issue(20).Open);
+            Assert.Contains(github.Issue(20).Comments,
+                c => c.Contains("kind=verify-failed", StringComparison.Ordinal));
+            Assert.Contains(github.Issue(20).Comments,
+                c => c.Contains("CS0104", StringComparison.Ordinal));   // the actual error surfaces
+        }
+        finally
+        {
+            tmp.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Passing_verification_allows_the_merge()
+    {
+        var tmp = Directory.CreateTempSubdirectory("verifyok");
+        try
+        {
+            var github = ItemAwaitingReview(21);
+            var config = Config(tmp.FullName) with { Verify = "make check" };
+            var processes = new RecordingProcessRunner
+            {
+                Respond = inv => inv.FileName == "claude"
+                    ? new ProcessResult(0, "Reviewed.", "")
+                    : new ProcessResult(0, "", ""),
+            };
+
+            await new Tick(config, github, processes, TextWriter.Null).RunAsync();
+
+            Assert.Single(github.MergedPrs);
+            Assert.Contains(processes.Invocations,
+                i => i.FileName == "bash" && i.Arguments.Contains("make check"));
+        }
+        finally
+        {
+            tmp.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task A_failed_audit_does_not_close_the_item()
     {
         var tmp = Directory.CreateTempSubdirectory("auditfail");
