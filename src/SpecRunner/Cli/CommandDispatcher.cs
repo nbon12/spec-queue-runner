@@ -34,6 +34,7 @@ public static class CommandDispatcher
             "demo" => Demo(args),
             "run-stage" => RunStage(args),
             "tick" => TickOnce(args),
+            "serve" => Serve(args),
             "doctor" => Doctor(args),
             "install" => Install(args),
             _ => Unknown(args[0]),
@@ -121,6 +122,25 @@ public static class CommandDispatcher
         catch (Exception ex)
         {
             Console.Error.WriteLine($"run-stage failed: {ex.Message}");
+            return (int)ExitCode.InternalError;
+        }
+    }
+
+    private static int Serve(string[] args)
+    {
+        if (args.Length < 2)
+        {
+            Console.Error.WriteLine("usage: spec-runner serve <config-path>");
+            return (int)ExitCode.ConfigInvalid;
+        }
+
+        try
+        {
+            return ServeCommand.RunAsync(args[1]).GetAwaiter().GetResult();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"serve failed: {ex.Message}");
             return (int)ExitCode.InternalError;
         }
     }

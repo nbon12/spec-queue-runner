@@ -37,6 +37,11 @@ ENV DISABLE_AUTOUPDATER=1
 
 COPY --chown=${USERNAME}:${USERNAME} --from=build /app/spec-runner /usr/local/bin/spec-runner
 
-# tini as PID 1 reaps the claude/tmux/git children each tick spawns.
-# launchd on the host invokes `docker run … spec-runner tick <config>` (FR-052a).
+# tini as PID 1 reaps the claude/tmux/git children each tick spawns — and now also keeps the
+# long-lived tmux server (live sessions) properly parented for the container's whole life.
+# The container runs the supervisor loop (constitution §2, v5.0.0): `serve` ticks internally on
+# the configured interval, so the container stays up, `docker logs -f` works, and a live tmux
+# session survives between ticks instead of dying with a per-tick container.
+# `tick`, `doctor`, and `install` remain available by overriding the command.
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/spec-runner"]
+CMD ["serve", "/etc/spec-runner/config.toml"]

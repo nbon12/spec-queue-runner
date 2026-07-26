@@ -1,57 +1,28 @@
 using SpecRunner.Adapters;
 using SpecRunner.Adapters.GitHub;
-using SpecRunner.Configuration;
+using SpecRunner.Logging;
 using SpecRunner.Ticking;
 
 namespace SpecRunner.Cli;
 
-/// <summary>The launchd entry point: run one tick from a config file (FR-001).</summary>
+/// <summary>
+/// Run exactly one tick and exit. The supervisor (`serve`) is what runs continuously in
+/// production; this stays supported for diagnosis, which the constitution requires (§2, v5.0.0) —
+/// being able to run a single tick by hand is how you tell a stuck loop from a stuck item.
+/// </summary>
 public static class TickCommand
 {
     public static async Task<int> RunAsync(string configPath)
     {
-        if (!File.Exists(configPath))
+        var (config, token, failure) = await InstanceStartup.LoadAsync(configPath).ConfigureAwait(false);
+        if (failure is not null)
         {
-            Console.Error.WriteLine($"config not found: {configPath}");
-            return (int)ExitCode.ConfigInvalid;
+            return failure.Value;
         }
 
-        InstanceConfig config;
-        try
-        {
-            config = ConfigLoader.Load(configPath);
-        }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine($"config parse failed: {ex.Message}");
-            return (int)ExitCode.ConfigInvalid;
-        }
-
-        var validation = ConfigValidation.Validate(config);
-        if (!validation.Ok)
-        {
-            Console.Error.WriteLine("config invalid:");
-            foreach (var error in validation.Errors)
-            {
-                Console.Error.WriteLine($"  - {error}");
-            }
-
-            return (int)ExitCode.ConfigInvalid;
-        }
-
-        // Secret: the PAT from its mounted file (FR-052), or GH_TOKEN as the demo fallback.
-        var token = File.Exists(config.GitHubPatFile)
-            ? (await File.ReadAllTextAsync(config.GitHubPatFile).ConfigureAwait(false)).Trim()
-            : Environment.GetEnvironmentVariable("GH_TOKEN");
-        if (string.IsNullOrWhiteSpace(token))
-        {
-            Console.Error.WriteLine("no GitHub token (mounted secret missing and GH_TOKEN unset).");
-            return (int)ExitCode.EnvironmentFailure;
-        }
-
-        var github = new GitHubClient(config.Slug, token);
+        var github = new GitHubClient(config!.Slug, token!);
         var processes = new ProcessRunner();
-        var tick = new Tick(config, github, processes, Console.Out);
+        var tick = new Tick(config, github, processes, TickLog.For(config, Console.Out));
         return await tick.RunAsync().ConfigureAwait(false);
     }
 }
