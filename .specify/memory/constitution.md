@@ -1,6 +1,46 @@
 <!--
 Sync Impact Report
 ==================
+Version change: 5.0.0 -> 6.0.0
+Modified principles:
+  Architectural Invariants (section 3) — "Predicates are the authority; labels are a cache" is
+    INVERTED. The item's `stage/*` labels on its issue are now the authority for pipeline
+    position; the worktree is where work is done and artifacts are kept, not where position is
+    inferred. A stage is complete when, and only when, its label is present.
+Added sections: None.
+Removed sections: None.
+Version bump rationale (MAJOR): a named invariant is reversed. Everything the runner decides
+  flows from stage derivation, so this is the largest single change to how it thinks.
+EVIDENCE — the previous rule was not merely inconvenient, it was broken in practice:
+  Deriving position from the filesystem requires knowing WHICH spec directory belongs to the
+  item, and nothing recorded that. `FindSpecDir` guessed with OrderByDescending, so with a
+  second spec directory present every feature/amendment item read the WRONG spec's artifacts.
+  Traced 2026-07-26 on issue #10: it would have found spec 001's spec/plan/tasks satisfied and
+  derived Analyze — against the runner's own specification, nothing to do with the item. The
+  feature and amendment pipelines have therefore never worked; only kinds that skip the spec
+  predicates entirely (chore, spike, audit) function today.
+COST ACCEPTED, AND ITS MITIGATIONS (operator decision, 2026-07-26):
+  A label is a claim; an artifact was evidence. The process boundary used to make the filesystem
+  self-describing, so a tick killed between doing work and recording it lost nothing. Under this
+  amendment that window re-runs the stage. Three mitigations are therefore MANDATED in section 3:
+    (a) a branch is bound to its issue, and artifacts are COMMITTED AND PUSHED on completion of
+        each stage, so no completed work lives only in an uncommitted worktree;
+    (b) the order is do → commit → label, never label → do, so a crash can only cause a re-run,
+        never a false claim of completion;
+    (c) any stage whose re-run is not naturally idempotent MUST be guarded against duplicating
+        its artifact — specify, which allocates a new spec directory, is the known case.
+  Deriving which spec directory belongs to an item now comes from the item's own branch rather
+  than a guess, which is what makes (c) checkable.
+Templates requiring updates:
+  .specify/templates/plan-template.md ✅ compatible — Constitution Check populated at plan time.
+  .specify/templates/spec-template.md ✅ compatible — no change needed.
+  .specify/templates/tasks-template.md ✅ compatible — no change needed.
+Follow-up TODOs:
+  - specs/001-spec-queue-runner/spec.md FR-013 states the predicate rule; amend to match.
+  - The crash-convergence property family asserts filesystem-derived convergence; it must be
+    reworked to assert convergence over labels, or it is testing a rule that no longer holds.
+
+----- prior amendment -----
 Version change: 4.0.0 -> 5.0.0
 Modified principles:
   Technology Stack (section 2) — the execution model changes from "launchd fires a fresh
@@ -204,7 +244,7 @@ Follow-up TODOs: None.
 
 # Spec Queue Runner Constitution
 
-**Version**: 5.0.0 | **Ratified**: 2026-07-25 | **Last Amended**: 2026-07-26
+**Version**: 6.0.0 | **Ratified**: 2026-07-25 | **Last Amended**: 2026-07-26
 **Authors**: Project maintainers
 
 ## 1. Project Purpose
@@ -303,11 +343,21 @@ regression, not a style issue.
   cleanly without manual repair, and a single tick MUST remain runnable independently for
   diagnosis. An unhandled fault in one iteration MUST NOT terminate the supervisor or leave the
   loop wedged; it is logged and the next iteration proceeds.
-- **Predicates are the authority; labels are a cache.** Every pipeline stage has an exit
-  condition that is a filesystem or issue predicate, observable by any tick with no memory
-  of previous ticks. Stage predicates MUST be evaluated in the item's worktree, never the
-  clone. The `stage/*` label records what was last observed and MUST NOT be treated as a
-  source of truth.
+- **Labels are the authority; the worktree is where work happens.** An item's position in its
+  kind's stage sequence is the first stage whose `stage/*` label is absent from its issue.
+  Position MUST NOT be inferred from the presence of files: doing so requires knowing which spec
+  directory belongs to the item, which the filesystem alone cannot say. The worktree holds the
+  work and its artifacts; the issue holds the record of what is done.
+- **Do, then commit, then label — never label first.** A stage records completion only after its
+  work is finished and its artifacts are committed and pushed to the item's branch. A crash may
+  therefore cause a stage to re-run, but can never leave a stage falsely marked complete. No
+  completed work may live only in an uncommitted worktree.
+- **A stage whose re-run would duplicate its artifact MUST be guarded.** Re-running is the
+  accepted cost of the rule above, so any stage that is not naturally idempotent MUST check
+  whether its artifact already exists on the item's branch and record completion instead of
+  producing a second one. Allocating a spec directory is the known case.
+- **An item's spec directory is discovered from its own branch**, as the spec path the branch
+  adds relative to the base — never by scanning `specs/` and guessing.
 - **The filesystem is the record; conversations are scaffolding.** Resolutions from live
   sessions land in the spec or plan on disk. No correctness-relevant state may live only in
   a running process, a tmux pane, or a chat transcript.
