@@ -167,6 +167,47 @@ If you add a feature, add tests at the right tier. Never write a test that spend
 This section is the point of the handoff. **Everything below was verified by grepping for unwired
 code and unread config**, not recalled.
 
+### The most important undiagnosed bug — read this one first
+
+**Every SpecKit command, in every item, writes into `specs/001-spec-queue-runner/`.**
+
+`.specify/feature.json` is **committed to the repository** and contains:
+
+```json
+{ "feature_directory": "specs/001-spec-queue-runner" }
+```
+
+`.specify/scripts/bash/common.sh` resolves the active feature in this order:
+
+1. `SPECIFY_FEATURE_DIRECTORY` environment variable
+2. **`.specify/feature.json`** ← this wins today
+3. error
+
+The runner **never sets either variable** — `ClaudeInvoker` passes `environment: null`. So every
+worktree branches from master carrying that committed pointer, and every `/speckit.*` invocation
+resolves to spec 001 regardless of which item is running. Observed live: issue #15, a chore, ran
+`/speckit.plan` and wrote an increment into the runner's own `plan.md`, `research.md`,
+`data-model.md`, `quickstart.md`, and two contracts.
+
+**This is not "chores have no spec of their own."** It would behave identically with a hundred spec
+directories present, and it affects features too — until `specify` happens to overwrite the pointer
+inside that worktree.
+
+The fix has two parts, and the second is the operator's call (§7):
+
+1. **Set `SPECIFY_FEATURE_DIRECTORY` explicitly on every SpecKit invocation**, derived from the
+   item. Being priority 1, it wins over the committed pointer, so no item can resolve to another's
+   spec whatever `feature.json` says. This alone closes the bug.
+2. **Adopt SpecKit's own branch naming.** `create-new-feature.sh` line 329 is
+   `FEATURE_DIR="$SPECS_DIR/$BRANCH_NAME"` — the directory name *is* the branch name. The runner
+   instead names branches `work/<issue#>`, which fights that convention. Naming them SpecKit's way
+   (`015-review-context` ↔ `specs/015-review-context/`) makes the spec directory derivable from the
+   branch by string, and makes branch, directory, and issue share one identity.
+
+Note that `Git.SpecDirOnBranchAsync` currently reconstructs an item's spec directory by diffing what
+its branch added. That works, but it is archaeology in place of a convention — (2) makes it
+unnecessary.
+
 ### Safety gaps — fix before trusting it unattended
 
 **1. `Reversibility` is dead code.** `Domain/Reversibility.cs` implements the always-block list
@@ -212,6 +253,18 @@ on. Verify runs build+test, which is real, but it is the *only* gate that actual
    now comes from labels (v6.0.0). An item's spec dir is discovered from **its own branch**
    (`Git.SpecDirOnBranchAsync`).
 
+   **Two corrections to how this was originally written up**, both worth knowing because the wrong
+   version is intuitive and will be re-derived otherwise:
+
+   - The related "SpecKit wrote into the wrong spec" symptom has a *different* cause — a committed
+     `feature.json` pointer, not directory guessing. See the top of §5. Fixing derivation did not
+     fix that, and the two are easy to conflate.
+   - When a chore's plan stage wrote into `specs/001-*`, the previous session called it "pollution",
+     reverted it, and stopped the runner for half an hour — **without reading what had been
+     written**. It was correct spec-driven work: an increment plan, a research entry, a contract
+     change the work required, and a data-model entity for a new type. A change to the runner
+     *should* update the runner's spec. The revert was itself the error and was undone.
+
 3. **"Review succeeded" ≠ "the code works."** A review is a Claude prompt. It exiting 0 means the
    prompt ran. For a long time the runner posted *"no blocking finding recorded"* — a hardcoded
    string — and merged regardless of the exit code. Hence the `verify` command, which actually
@@ -233,6 +286,69 @@ on. Verify runs build+test, which is real, but it is the *only* gate that actual
 
 ---
 
+## 6b. The live channel — what is proven, what is not
+
+The operator's stance: **container churn is expected and acceptable.** This is under active
+development, `deploy/up.sh` does `docker rm -f`, and sessions dying with the container is fine. That
+makes **resume the load-bearing mechanism** for the live channel, not container uptime.
+
+### Verified working (2026-07-26, by direct test)
+
+Resuming a conversation after its container is long gone **works**. A fresh container was pointed at
+a conversation id from an earlier tick and recalled its full context:
+
+```
+$ docker run --rm -v sr-self-home:/home/runner -w /home/runner/work/11 \
+    --entrypoint /home/runner/.local/bin/claude spec-runner:latest \
+    --resume 7d2bafbe-... -p "what task were you working on?"
+
+I was reviewing the pull request for issue #11 — a one-line HEARTBEAT.md addition
+on branch work/11 — and found no blocking issues.
+```
+
+It survives because nothing resume needs lives inside the container:
+
+| Link | Where it lives | Survives? |
+|---|---|---|
+| Transcript | `sr-self-home` volume, `.claude/projects/` | ✅ probe transcripts from 2026-07-25 are still present |
+| Conversation id | a comment on the GitHub issue | ✅ GitHub, not the container |
+| Worktree | same volume, stable path | ✅ |
+
+That is by design — `.claude` was deliberately put on the volume rather than seeded from a Secret.
+
+### Sharp edge: `--resume` is working-directory sensitive
+
+Claude Code keys transcripts by **encoded cwd** (`/home/runner/work/11` → `-home-runner-work-11`).
+Resume from the wrong directory and you get:
+
+```
+No conversation found with session ID: <id>
+```
+
+which reads as *the conversation is gone* when it is merely being sought in the wrong folder. The
+first attempt at the test above failed exactly this way.
+
+`SweepLiveSessionsAsync` gets it right by construction — `tmux new-session -c <worktreePath>` sets
+cwd before `claude --resume` runs. But **if worktree paths ever change, every recorded id becomes
+unresumable while appearing deleted.** Do not change the worktree path scheme without migrating, and
+do not trust "no conversation found" as evidence of loss until you have checked cwd.
+
+### Still unproven
+
+1. **Remote Control re-registration.** Does resuming reattach the operator's phone to the *same*
+   URL with no duplicate push? The probe verified this on 2026-07-25 — but under the old ephemeral
+   model, not the supervisor.
+2. **The sweep's orchestration.** Detecting a dead tmux, respawning, and issuing the resume is
+   tested only against a fake process runner.
+3. **Any live session at all.** The deployed runner has never spawned one. Zero.
+
+**The one test that closes all three** (~20 minutes, needs the operator's phone): force a block, take
+the push, answer partially from the phone, `docker restart` the container, and confirm the next tick
+returns you to the same conversation. Until then the live channel has exactly the shape of trap #1 —
+written, tested, believed in, never executed in the deployment it ships to.
+
+---
+
 ## 7. Open decisions — the operator's, not yours
 
 **Do not resolve these unilaterally. Ask.**
@@ -246,6 +362,14 @@ on. Verify runs build+test, which is real, but it is the *only* gate that actual
 
 2. **#10** is unlabelled and parked. With derivation fixed, `kind/feature` + `status/ready` would now
    genuinely put it through the shaping pipeline.
+
+2b. **Branch naming.** Should the runner adopt SpecKit's convention (`015-review-context`, matching
+   `specs/015-review-context/`) instead of `work/<issue#>`? SpecKit's own scripts assume
+   `FEATURE_DIR = specs/<branch-name>`, so adopting it makes branch, directory, and issue one shared
+   identity and removes the need to reconstruct the spec path by diffing. The cost is a migration:
+   branch names are how every worktree, PR, and in-flight item is currently identified, and **#15 is
+   mid-pipeline on `work/15` right now**. Setting `SPECIFY_FEATURE_DIRECTORY` (§5) fixes the bug
+   without this; the rename is the cleaner end state, not a prerequisite.
 
 3. **Narrowing the PAT.** The shared token carries `workflow` scope, which the constitution
    explicitly forbids (§6). That is why #16 (CI) is achievable — a runner that can rewrite its own CI
