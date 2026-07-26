@@ -443,8 +443,10 @@ public class PipelineTests
     }
 
     /// <summary>
-    /// The review stage is told what it is reviewing (R17). Asserted at the process boundary,
-    /// because what reaches <c>claude</c>'s argv is the only thing the reviewer actually sees.
+    /// The review stage is told what it is reviewing (R17, FR-034h). Asserted at the process
+    /// boundary, because what reaches <c>claude</c>'s argv is the only thing the reviewer actually
+    /// sees. This is the feature half of quickstart scenario 5c; the chore half — which has no spec
+    /// directory at all — is the test below.
     /// </summary>
     [Fact]
     public async Task Review_invocation_carries_the_pull_request_the_branches_and_the_issue()
@@ -455,13 +457,19 @@ public class PipelineTests
             var github = new InMemoryGitHubClient();
             github.AddUser("operator", 100);
             github.AddIssue(5, "Add a widget", "Targets: none", "operator", 100,
-                "status/ready", "kind/chore", "stage/intake", "stage/plan", "stage/implement");
+                "status/ready", "kind/feature", "stage/intake", "stage/specify", "stage/clarify",
+                "stage/plan", "stage/tasks", "stage/analyze", "stage/implement");
             github.Issue(5).Comments.Add(
                 "<!-- spec-runner:v1 kind=pr id=pr-5 number=42 url=https://example/pr/42 -->");
 
-            // The item's own spec directory comes from diffing its branch against the base — the
-            // branch adds `002-widget`, so that is what the reviewer must be given, whatever else
-            // happens to sit in `specs/`.
+            // Two spec directories sit in the worktree; only `002-widget` is on this item's branch.
+            // The decoy sorts higher, so the pre-v6.0.0 "highest-sorted directory under specs/"
+            // guess would name it — which is the failure this context is supposed to make
+            // impossible. The reviewer must be given the one the branch diff names.
+            var specs = Path.Combine(tmp.FullName, "work", "5", "specs");
+            Directory.CreateDirectory(Path.Combine(specs, "002-widget"));
+            Directory.CreateDirectory(Path.Combine(specs, "900-decoy"));
+
             var processes = new RecordingProcessRunner
             {
                 Respond = inv =>
@@ -481,6 +489,7 @@ public class PipelineTests
             Assert.Contains("#5", prompt, System.StringComparison.Ordinal);                   // issue
             Assert.Contains("Add a widget", prompt, System.StringComparison.Ordinal);
             Assert.Contains("specs/002-widget", prompt, System.StringComparison.Ordinal);
+            Assert.DoesNotContain("900-decoy", prompt, System.StringComparison.Ordinal);
 
             // Issue-supplied text only ever appears inside the delimited data region (§6).
             Assert.True(
