@@ -13,11 +13,31 @@ public static class LaunchdInstaller
         string configPathInContainer,
         string hostConfigPath,
         string patSecretHostPath,
-        string claudeVolume,
-        string worktreesVolume,
-        int intervalSeconds = 300)
+        string homeVolume,
+        int intervalSeconds = 300,
+        string dockerHost = "",
+        string logPath = "")
     {
         var label = "com.spec-runner." + slug.Replace('/', '.');
+
+        // ONE volume at /home/runner holds .claude (OAuth), the clone, the worktrees, and
+        // state/ (lock + log). Single volume is deliberate: the lock file must be shared so
+        // overlapping tick containers mutually-exclude (FR-002).
+        // No --init — the image's ENTRYPOINT is already tini as PID 1; nesting a second warns.
+        var dockerHostEntry = string.IsNullOrEmpty(dockerHost)
+            ? string.Empty
+            : $"""
+                    <key>DOCKER_HOST</key><string>{dockerHost}</string>
+              """;
+
+        var logEntries = string.IsNullOrEmpty(logPath)
+            ? string.Empty
+            : $"""
+
+                 <key>StandardOutPath</key><string>{logPath}</string>
+                 <key>StandardErrorPath</key><string>{logPath}</string>
+              """;
+
         return $"""
             <?xml version="1.0" encoding="UTF-8"?>
             <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
@@ -30,14 +50,17 @@ public static class LaunchdInstaller
               <key>ProgramArguments</key>
               <array>
                 <string>/usr/local/bin/docker</string>
-                <string>run</string><string>--rm</string><string>--init</string>
+                <string>run</string><string>--rm</string>
                 <string>-v</string><string>{patSecretHostPath}:/run/secrets/github_pat:ro</string>
-                <string>-v</string><string>{claudeVolume}:/home/runner/.claude</string>
-                <string>-v</string><string>{worktreesVolume}:/home/runner/work</string>
+                <string>-v</string><string>{homeVolume}:/home/runner</string>
                 <string>-v</string><string>{hostConfigPath}:{configPathInContainer}:ro</string>
                 <string>{image}</string>
                 <string>tick</string><string>{configPathInContainer}</string>
               </array>
+              <key>EnvironmentVariables</key>
+              <dict>
+                <key>PATH</key><string>/usr/local/bin:/usr/bin:/bin</string>
+            {dockerHostEntry}  </dict>{logEntries}
             </dict>
             </plist>
             """;

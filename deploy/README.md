@@ -4,6 +4,10 @@ This directory holds everything that runs the runner against **its own repo**
 (`nbon12/spec-queue-runner`). The tick runs inside the `spec-runner:latest` container;
 launchd fires one every 5 minutes. Nothing runs on the host except Docker + launchd.
 
+> Setting up a **different** repository? See [Setting up another project](../README.md#setting-up-another-project)
+> in the root README — `./deploy/new-instance.sh <owner/repo>` does the provisioning.
+> This file documents the already-deployed self-hosting instance specifically.
+
 ## What's live right now
 
 - **Image**: `spec-runner:latest` (linux/arm64), built from the repo `Dockerfile`.

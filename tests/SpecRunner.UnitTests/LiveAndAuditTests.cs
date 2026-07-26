@@ -88,17 +88,29 @@ public class LaunchdInstallerTests
     {
         var plist = LaunchdInstaller.Plist(
             slug: "nbon12/homelab", image: "spec-runner:latest",
-            configPathInContainer: "/etc/spec-runner/homelab.toml",
+            configPathInContainer: "/etc/spec-runner/config.toml",
             hostConfigPath: "/Users/x/.config/spec-runner/homelab.toml",
             patSecretHostPath: "/Users/x/.config/spec-runner/homelab.pat",
-            claudeVolume: "sr-homelab-claude", worktreesVolume: "sr-homelab-work",
-            intervalSeconds: 300);
+            homeVolume: "sr-nbon12-homelab-home",
+            intervalSeconds: 300,
+            dockerHost: "unix:///Users/x/.docker/run/docker.sock",
+            logPath: "/Users/x/.config/spec-runner/homelab.scheduler.log");
 
         Assert.Contains("com.spec-runner.nbon12.homelab", plist, System.StringComparison.Ordinal);
         Assert.Contains("<integer>300</integer>", plist, System.StringComparison.Ordinal);
         Assert.Contains("docker", plist, System.StringComparison.Ordinal);
-        Assert.Contains("--init", plist, System.StringComparison.Ordinal); // reaping
         Assert.Contains("/run/secrets/github_pat:ro", plist, System.StringComparison.Ordinal);
         Assert.Contains("<string>tick</string>", plist, System.StringComparison.Ordinal);
+
+        // ONE volume at /home/runner — the clone, worktrees, .claude and the shared lock all
+        // persist together (a split layout would leave the lock unshared and the clone volatile).
+        Assert.Contains("sr-nbon12-homelab-home:/home/runner", plist, System.StringComparison.Ordinal);
+
+        // No nested init: the image entrypoint is already tini as PID 1.
+        Assert.DoesNotContain("--init", plist, System.StringComparison.Ordinal);
+
+        // launchd's environment is bare — the Docker socket and PATH must be explicit.
+        Assert.Contains("DOCKER_HOST", plist, System.StringComparison.Ordinal);
+        Assert.Contains("homelab.scheduler.log", plist, System.StringComparison.Ordinal);
     }
 }
