@@ -233,6 +233,7 @@ first-party interfaces, `Adapters/` wrap GitHub (Octokit), git, tmux, and Claude
 | [`specs/001-spec-queue-runner/spec.md`](specs/001-spec-queue-runner/spec.md) | the full requirements, plus a living implementation-status ledger |
 | [`deploy/README.md`](deploy/README.md) | the self-hosting instance: what's running now, and its trade-offs |
 | [`contracts/`](specs/001-spec-queue-runner/contracts/) | config schema, CLI surface, issue conventions, Claude invocation |
+| [`docs/AI-HANDOFF.md`](docs/AI-HANDOFF.md) | **start here if you are an AI picking this up** — state, gaps, traps, open decisions |
 | [`docs/kubernetes-hosting.md`](docs/kubernetes-hosting.md) | design proposal for running the tick on Kubernetes (not built) |
 
 ## Security posture
