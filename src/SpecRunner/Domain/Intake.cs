@@ -17,7 +17,7 @@ public static class Intake
 
         // An explicit spec target that already exists reads as an amendment; a new target reads
         // as a feature. The demo heuristic keys off the words a phone-filed issue tends to use.
-        if (item.Targets.Count > 0)
+        if (NamesTargetSpecs(item.Body))
         {
             return text.Contains("amend") || text.Contains("change the spec")
                 ? new Classification(Kind.Amendment, "Targets a spec and speaks of amending it.")
@@ -40,4 +40,27 @@ public static class Intake
 
     /// <summary>The <c>kind/*</c> label for a classification.</summary>
     public static string LabelFor(Kind kind) => "kind/" + kind.ToString().ToLowerInvariant();
+
+    /// <summary>
+    /// Whether the body carries a <c>Targets:</c> line naming at least one spec — an intake hint
+    /// only (issue-conventions.md): naming a spec is how a phone-filed issue says what it is
+    /// about. It has NO scheduling effect; dependencies are GitHub's native blocked-by
+    /// relationship (FR-010), so no body text can hold an item.
+    /// </summary>
+    private static bool NamesTargetSpecs(string body)
+    {
+        foreach (var line in body.Split('\n'))
+        {
+            var trimmed = line.Trim();
+            if (!trimmed.StartsWith("Targets:", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var rest = trimmed["Targets:".Length..].Trim();
+            return rest.Length > 0 && !rest.Equals("none", StringComparison.OrdinalIgnoreCase);
+        }
+
+        return false;
+    }
 }

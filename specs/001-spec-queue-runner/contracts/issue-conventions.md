@@ -39,6 +39,34 @@ Promote by removing `icebox` and applying `status/ready`.
 Label writes are expressed as a desired-state set, never blind add/remove, so a tick killed
 mid-write converges on re-run (research R10).
 
+## Dependencies
+
+Held-gating is a **native GitHub issue relationship**, not a body line. Mark an issue *blocked
+by* another (issue sidebar → **Relationships**) and the runner will not schedule it while that
+blocker is open (FR-010). The relationship is structured, shows in the UI, and cannot be
+triggered by pasted text.
+
+The runner reads it at selection time with a GraphQL `blockedBy` query — REST does not expose
+issue dependencies — and counts only blockers whose `state` is `OPEN`:
+
+```graphql
+query($owner:String!, $repo:String!, $number:Int!) {
+  repository(owner:$owner, name:$repo) {
+    issue(number:$number) {
+      blockedBy(first:50) { totalCount nodes { number title state } }
+    }
+  }
+}
+```
+
+A held item is **skipped and left untouched** — no labels, no comments — and the blocking issue
+numbers are named in the tick log. Because the check is re-run every tick, closing the last
+blocker releases the item with no operator action and no relabelling. An issue with no
+dependencies is schedulable.
+
+Dependencies are queried only for operator-authored candidates, so a non-operator issue costs no
+API call at all (FR-005).
+
 ## Body lines
 
 Written by the operator (or by the runner when it resolves them):
@@ -49,10 +77,13 @@ Targets: none
 Recurring: monthly
 ```
 
-- **`Targets:`** — the specs this item touches. An item is not schedulable while any target is
-  absent from `main`; it is labelled `status/held` with a comment naming what it waits for, and
-  promoted to `status/ready` by the reaper once the target lands (FR-010). For `feature` items
-  the runner writes the allocated spec number back into this line.
+**No body line affects scheduling.** These are hints and markers, read after the queue has
+already decided what is schedulable.
+
+- **`Targets:`** — the specs this item touches; an **intake hint** used when inferring kind
+  (FR-016). For `feature` items the runner writes the allocated spec number back into this line.
+  It does *not* gate anything: waiting for work to finish is expressed as a blocked-by
+  relationship, above.
 - **`Recurring:`** — presence marks the item recurring. On reaching a terminal state the runner
   files a successor issue whose body is a copy of this one's, carrying the marker, kind, and
   configuration forward (FR-042). Closed issues stay closed; the book is append-only.
@@ -113,7 +144,8 @@ This is the **only** dialogue-related content the issue receives while the live 
 
 ### Held comment (`kind=held`)
 
-States exactly which target is not yet on `main` (FR-010).
+Names the open issues the item is blocked by (FR-010). Reserved: the tick records a hold in its
+log and leaves the issue itself untouched, so this comment type is currently unused.
 
 ### Review comment (`kind=review`)
 

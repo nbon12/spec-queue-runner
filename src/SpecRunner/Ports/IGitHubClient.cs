@@ -17,6 +17,13 @@ public interface IGitHubClient
 
     Task<WorkItem> GetIssueAsync(int number, CancellationToken ct = default);
 
+    /// <summary>
+    /// The issues this one is blocked by that are still open — GitHub's native issue-dependency
+    /// relationship, and the whole of held-gating (FR-010). Empty ⇒ nothing holds the item.
+    /// Closed blockers are filtered out here, so a caller never has to know their state.
+    /// </summary>
+    Task<IReadOnlyList<BlockingIssue>> GetOpenBlockersAsync(int number, CancellationToken ct = default);
+
     Task AddCommentAsync(int number, string body, CancellationToken ct = default);
 
     Task AddLabelsAsync(int number, IReadOnlyList<string> labels, CancellationToken ct = default);

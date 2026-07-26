@@ -114,36 +114,29 @@ public class PipelineTests
     }
 
     [Fact]
-    public async Task Item_targeting_a_spec_not_on_base_is_held_not_scheduled()
+    public async Task Item_blocked_by_an_open_issue_is_held_not_scheduled()
     {
         var tmp = Directory.CreateTempSubdirectory("held");
         try
         {
             var github = new InMemoryGitHubClient();
             github.AddUser("operator", 100);
-            // Targets a spec that isn't on base (ls-tree returns nothing) → must hold, untouched.
-            github.AddIssue(9, "Amend the widget spec", "Targets: specs/010-widget/spec.md",
-                "operator", 100, "status/ready", "kind/amendment", "stage/intake");
+            github.AddIssue(9, "Amend the widget spec", "", "operator", 100,
+                "status/ready", "kind/chore", "stage/intake");
+            // GitHub's native relationship: #9 is blocked by #20, which is still open.
+            github.AddIssue(20, "Land the widget spec", "", "operator", 100);
+            github.AddBlockedBy(9, 20);
 
-            var config = new InstanceConfig
-            {
-                Slug = "op/repo", Path = "/clone",
-                WorktreesRoot = Path.Combine(tmp.FullName, "work"),
-                OperatorLogin = "operator", BaseBranch = "master",
-                GitHubPatFile = "/run/secrets/pat",
-                ClaudeConfigPath = Path.Combine(tmp.FullName, ".claude.json"),
-                Lock = Path.Combine(tmp.FullName, ".lock"),
-            };
-            // ls-tree returns empty ⇒ no specs on base ⇒ the target is missing.
-            var processes = new RecordingProcessRunner();
+            var log = new StringWriter();
+            await new Tick(HeldConfig(tmp), github, new RecordingProcessRunner(), log).RunAsync();
 
-            await new Tick(config, github, processes, TextWriter.Null).RunAsync();
-
-            // Held: still ready, still open, no worktree/PR work happened.
+            // Held: still ready, still open, untouched — and the blocker is named in the log.
             Assert.True(github.Issue(9).Open);
             Assert.Contains("status/ready", github.Issue(9).Labels);
+            Assert.Empty(github.Issue(9).Comments);
             Assert.Empty(github.OpenedPrs);
             Assert.DoesNotContain("stage/implement", github.Issue(9).Labels);
+            Assert.Contains("#20", log.ToString(), System.StringComparison.Ordinal);
         }
         finally
         {
@@ -161,25 +154,15 @@ public class PipelineTests
             github.AddUser("operator", 100);
             // The contradictory case: parked by the operator, yet still carrying status/ready.
             // `icebox` must win — otherwise it is a safeguard a stray label can override.
-            github.AddIssue(20, "Parked idea", "Targets: none", "operator", 100,
+            github.AddIssue(20, "Parked idea", "", "operator", 100,
                 "status/ready", "icebox", "kind/chore", "stage/intake");
 
-            var config = new InstanceConfig
-            {
-                Slug = "op/repo", Path = "/clone",
-                WorktreesRoot = Path.Combine(tmp.FullName, "work"),
-                OperatorLogin = "operator", BaseBranch = "master",
-                GitHubPatFile = "/run/secrets/pat",
-                ClaudeConfigPath = Path.Combine(tmp.FullName, ".claude.json"),
-                Lock = Path.Combine(tmp.FullName, ".lock"),
-            };
             var processes = new RecordingProcessRunner();
-
-            await new Tick(config, github, processes, TextWriter.Null).RunAsync();
+            await new Tick(HeldConfig(tmp), github, processes, TextWriter.Null).RunAsync();
 
             Assert.Empty(github.OpenedPrs);
             Assert.DoesNotContain("stage/implement", github.Issue(20).Labels);
-            Assert.Empty(processes.Invocations);   // never even reached the process boundary
+            Assert.Empty(processes.Invocations);   // never reached the process boundary at all
         }
         finally
         {
@@ -187,6 +170,124 @@ public class PipelineTests
         }
     }
 
+    [Fact]
+    public async Task Every_open_blocker_is_named_when_an_item_is_held()
+    {
+        var tmp = Directory.CreateTempSubdirectory("held2");
+        try
+        {
+            var github = new InMemoryGitHubClient();
+            github.AddUser("operator", 100);
+            github.AddIssue(9, "Amend the widget spec", "", "operator", 100,
+                "status/ready", "kind/chore", "stage/intake");
+            github.AddIssue(20, "Land the spec", "", "operator", 100);
+            github.AddIssue(21, "Land the schema", "", "operator", 100);
+            github.AddIssue(22, "Already done", "", "operator", 100);
+            github.Issue(22).Open = false;              // a closed blocker holds nothing
+            github.AddBlockedBy(9, 20, 21, 22);
+
+            var log = new StringWriter();
+            await new Tick(HeldConfig(tmp), github, new RecordingProcessRunner(), log).RunAsync();
+
+            Assert.Contains("status/ready", github.Issue(9).Labels);
+            Assert.Empty(github.OpenedPrs);
+            Assert.Contains("#20, #21", log.ToString(), System.StringComparison.Ordinal);
+            Assert.DoesNotContain("#22", log.ToString(), System.StringComparison.Ordinal);
+        }
+        finally
+        {
+            tmp.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+
+    public async Task Item_is_released_once_the_last_blocker_closes()
+    {
+        var tmp = Directory.CreateTempSubdirectory("held3");
+        try
+        {
+            var github = new InMemoryGitHubClient();
+            github.AddUser("operator", 100);
+            github.AddIssue(9, "Add a file", "", "operator", 100,
+                "status/ready", "kind/chore", "stage/intake");
+            github.AddIssue(20, "First blocker", "", "operator", 100);
+            github.AddIssue(21, "Second blocker", "", "operator", 100);
+            github.AddBlockedBy(9, 20, 21);
+
+            // The fake claude "makes a change", so a released item reaches PR.
+            var processes = new RecordingProcessRunner
+            {
+                Respond = inv =>
+                {
+                    var isStatus = inv.FileName == "git" && inv.Arguments.Contains("--porcelain");
+                    var stdout = isStatus ? "?? newfile.txt" : (inv.Arguments.Contains("HEAD") ? "abc1234" : "");
+                    return new SpecRunner.Ports.ProcessResult(0, stdout, "");
+                },
+            };
+            var config = HeldConfig(tmp);
+
+            await new Tick(config, github, processes, TextWriter.Null).RunAsync();
+            Assert.Empty(github.OpenedPrs);             // held by two
+
+            github.Issue(20).Open = false;
+            await new Tick(config, github, processes, TextWriter.Null).RunAsync();
+            Assert.Empty(github.OpenedPrs);             // still held by one
+
+            // Closing the last blocker releases it — no relabelling, no operator action.
+            github.Issue(21).Open = false;
+            await new Tick(config, github, processes, TextWriter.Null).RunAsync();
+            Assert.Single(github.OpenedPrs);
+            Assert.Contains("stage/implement", github.Issue(9).Labels);
+        }
+        finally
+        {
+            tmp.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task An_item_with_no_dependencies_is_schedulable_whatever_its_body_says()
+    {
+        var tmp = Directory.CreateTempSubdirectory("held4");
+        try
+        {
+            var github = new InMemoryGitHubClient();
+            github.AddUser("operator", 100);
+            // Prose that used to wedge the item forever is now inert: no relationship, no hold.
+            github.AddIssue(9, "Add a file", "Targets: specs/010-widget/spec.md\nBlocked by: #999",
+                "operator", 100, "status/ready", "kind/chore", "stage/intake");
+
+            var processes = new RecordingProcessRunner
+            {
+                Respond = inv =>
+                {
+                    var isStatus = inv.FileName == "git" && inv.Arguments.Contains("--porcelain");
+                    var stdout = isStatus ? "?? newfile.txt" : (inv.Arguments.Contains("HEAD") ? "abc1234" : "");
+                    return new SpecRunner.Ports.ProcessResult(0, stdout, "");
+                },
+            };
+
+            await new Tick(HeldConfig(tmp), github, processes, TextWriter.Null).RunAsync();
+
+            Assert.Single(github.OpenedPrs);
+            Assert.Contains("stage/implement", github.Issue(9).Labels);
+        }
+        finally
+        {
+            tmp.Delete(recursive: true);
+        }
+    }
+
+    private static InstanceConfig HeldConfig(DirectoryInfo tmp) => new()
+    {
+        Slug = "op/repo", Path = "/clone",
+        WorktreesRoot = Path.Combine(tmp.FullName, "work"),
+        OperatorLogin = "operator", BaseBranch = "master",
+        GitHubPatFile = "/run/secrets/pat",
+        ClaudeConfigPath = Path.Combine(tmp.FullName, ".claude.json"),
+        Lock = Path.Combine(tmp.FullName, ".lock"),
+    };
     [Fact]
     public async Task Stale_in_progress_item_is_reclaimed_to_ready()
     {
