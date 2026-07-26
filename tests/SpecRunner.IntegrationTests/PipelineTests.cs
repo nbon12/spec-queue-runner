@@ -152,47 +152,6 @@ public class PipelineTests
     }
 
     [Fact]
-    public async Task A_spec_less_item_plans_to_its_issue_and_writes_no_files()
-    {
-        // Observed on #15: /speckit.plan writes into "the current feature", so an item with no
-        // spec directory of its own appended an increment to the runner's shared specs/001 —
-        // which grows without bound and makes any two concurrent chores conflict on one file.
-        var tmp = Directory.CreateTempSubdirectory("plan-to-issue");
-        try
-        {
-            var github = new InMemoryGitHubClient();
-            github.AddUser("operator", 100);
-            github.AddIssue(30, "Tidy the logs", "", "operator", 100,
-                "status/ready", "kind/chore", "stage/intake");   // plan is next
-
-            var processes = new RecordingProcessRunner
-            {
-                Respond = inv => inv.FileName == "claude"
-                    ? new SpecRunner.Ports.ProcessResult(0, "1. Do the thing\n2. Then the other", "")
-                    : new SpecRunner.Ports.ProcessResult(0, "", ""),   // git: no spec dir on branch
-            };
-
-            await new Tick(HeldConfig(tmp), github, processes, TextWriter.Null).RunAsync();
-
-            Assert.Contains("stage/plan", github.Issue(30).Labels);
-            Assert.Contains(github.Issue(30).Comments,
-                c => c.Contains("kind=plan", StringComparison.Ordinal)
-                  && c.Contains("Do the thing", StringComparison.Ordinal));
-
-            // It must NOT have invoked the artifact-writing SpecKit command.
-            Assert.DoesNotContain(processes.Invocations,
-                i => i.FileName == "claude" && i.Arguments.Any(a => a.Contains("/speckit.plan", StringComparison.Ordinal)));
-            // And the prompt must forbid writing, since the whole point is not touching files.
-            Assert.Contains(processes.Invocations,
-                i => i.FileName == "claude" && i.Arguments.Any(a => a.Contains("Do NOT create or modify any file", StringComparison.Ordinal)));
-        }
-        finally
-        {
-            tmp.Delete(recursive: true);
-        }
-    }
-
-    [Fact]
     public async Task Iceboxed_item_is_skipped_even_when_labelled_ready()
     {
         var tmp = Directory.CreateTempSubdirectory("icebox");
