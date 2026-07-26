@@ -13,7 +13,7 @@
   <array>
     <string>/usr/local/bin/docker</string>
     <string>run</string><string>--rm</string><string>--platform</string><string>linux/arm64</string>
-    <string>-v</string><string>/Users/nicholasbonilla/.config/spec-runner/spec-queue-runner.pat:/run/secrets/github_pat:ro</string>
+    <string>-v</string><string>/Users/nicholasbonilla/.config/spec-runner/github.pat:/run/secrets/github_pat:ro</string>
     <string>-v</string><string>sr-self-home:/home/runner</string>
     <string>-v</string><string>/Users/nicholasbonilla/RiderProjects/spec-queue-runner/deploy/spec-queue-runner.toml:/etc/spec-runner/config.toml:ro</string>
     <string>spec-runner:latest</string>

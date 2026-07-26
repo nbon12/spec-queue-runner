@@ -25,7 +25,8 @@ account of every judgment call waiting in the morning.
 - **A Claude subscription** for the in-container login. Setup tokens and API keys will not work
   for live sessions; Remote Control needs a full-scope claude.ai OAuth.
 - **macOS** if you want scheduling via launchd. Any Docker host works for running ticks manually.
-- **A GitHub token** scoped to the repo (Issues, Contents, Pull requests).
+- **A GitHub token** — one fine-grained PAT can serve every instance; permissions limited to
+  Issues, Contents, and Pull requests.
 
 ## Quick start (a new repository)
 
@@ -89,14 +90,16 @@ operator-ID resolution, and whether the Claude credential is still *refreshable*
 
 ## Setting up another project
 
-Each repository gets its own **instance**: its own config, secret, volume, and launchd job.
-Instances never coordinate and must never share a lock, log, clone, or worktrees root.
+Each repository gets its own **instance**: its own config, volume, and launchd job (the GitHub
+credential is shared by default). Instances never coordinate and must never share a lock, log,
+clone, or worktrees root.
 
 `./deploy/new-instance.sh <owner/repo> [base-branch]` does the provisioning:
 
-1. Writes the GitHub credential to `~/.config/spec-runner/<owner>-<repo>.pat` (mode 600, outside
-   any repo). It falls back to the `gh` CLI token — **replace it with a fine-grained PAT** scoped
-   to that one repo.
+1. Reuses the shared credential at `~/.config/spec-runner/github.pat` (mode 600, outside any
+   repo), so a new instance usually needs no credential work at all. If none exists it falls
+   back to the `gh` CLI token — which works, but carries broader *permissions* than
+   [§6 allows](#credentials-and-what-actually-expires); replace it with one fine-grained PAT.
 2. Creates the volume `sr-<owner>-<repo>-home`, mounted at `/home/runner`. **One** volume holds
    `.claude/` (the OAuth), `clone/`, `work/` (worktrees), and `state/` (lock + log) — deliberately
    single, so the lock is shared and overlapping ticks mutually-exclude.
@@ -114,7 +117,7 @@ $EDITOR ~/.config/spec-runner/$KEY.toml
 
 # Health-check.
 docker run --rm \
-  -v "$HOME/.config/spec-runner/$KEY.pat:/run/secrets/github_pat:ro" \
+  -v "$HOME/.config/spec-runner/github.pat:/run/secrets/github_pat:ro" \
   -v "sr-$KEY-home:/home/runner" \
   -v "$HOME/.config/spec-runner/$KEY.toml:/etc/spec-runner/config.toml:ro" \
   spec-runner:latest doctor /etc/spec-runner/config.toml
@@ -128,7 +131,7 @@ docker run --rm -it -v "sr-$KEY-home:/home/runner" \
 # container, but launchd runs on the host, so container paths would mount the wrong files.
 docker run --rm -v "$HOME/.config/spec-runner/$KEY.toml:/etc/spec-runner/config.toml:ro" \
   -e SPEC_RUNNER_HOST_CONFIG="$HOME/.config/spec-runner/$KEY.toml" \
-  -e SPEC_RUNNER_HOST_PAT="$HOME/.config/spec-runner/$KEY.pat" \
+  -e SPEC_RUNNER_HOST_PAT="$HOME/.config/spec-runner/github.pat" \
   -e SPEC_RUNNER_HOME_VOLUME="sr-$KEY-home" \
   -e SPEC_RUNNER_HOST_HOME="$HOME" \
   spec-runner:latest install /etc/spec-runner/config.toml spec-runner:latest \
@@ -145,6 +148,15 @@ Two credentials per instance, with very different maintenance stories.
 
 **The GitHub token** is a file on the host, mounted read-only at `/run/secrets/github_pat`.
 It never appears in config, image, or repo. Expiry is whatever you set when you issue it.
+
+By default every instance shares **one** PAT at `~/.config/spec-runner/github.pat`, so adding a
+repository needs no credential work. What the constitution constrains is *permissions*, not
+repository breadth: issues, contents, and pull requests only — **never** administration,
+workflow, or deletion. That ceiling is what bounds the damage a confused run can do, which is
+why it is not negotiable even though repo-scoping is.
+
+To give one instance its own narrower token, drop it at
+`~/.config/spec-runner/<owner>-<repo>.pat`; a per-instance file always wins over the shared one.
 
 **The claude.ai OAuth** is established once by an in-container `/login` and persisted in the
 instance's volume. It is *two* tokens, and conflating them causes needless worry:

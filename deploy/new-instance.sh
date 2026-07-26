@@ -19,8 +19,14 @@ KEY="${SLUG//\//-}"                     # owner-repo
 VOLUME="sr-${KEY}-home"
 IMAGE="${SPEC_RUNNER_IMAGE:-spec-runner:latest}"
 CFG_DIR="${HOME}/.config/spec-runner"
-PAT_FILE="${CFG_DIR}/${KEY}.pat"
 CONFIG="${CFG_DIR}/${KEY}.toml"
+
+# One shared credential by default (constitution §6, v4.0.0): repository breadth is the
+# operator's call, so a single fine-grained PAT serves every instance. A per-instance file,
+# if one exists, still wins — so an instance CAN be given its own narrower token.
+SHARED_PAT="${CFG_DIR}/github.pat"
+PAT_FILE="${CFG_DIR}/${KEY}.pat"
+[[ -s "$PAT_FILE" ]] || PAT_FILE="$SHARED_PAT"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 command -v docker >/dev/null || { echo "docker not found" >&2; exit 2; }
@@ -34,17 +40,23 @@ mkdir -p "$CFG_DIR"
 chmod 700 "$CFG_DIR"
 
 # ── 1. The GitHub credential ────────────────────────────────────────────────
-# Prefer an existing least-privilege PAT. Falls back to the gh CLI token, which works
-# but is broader than the constitution wants (§6) — see the README.
-if [[ ! -s "$PAT_FILE" ]]; then
-  if command -v gh >/dev/null && gh auth token >/dev/null 2>&1; then
-    gh auth token > "$PAT_FILE"
-    echo "seeded PAT from 'gh auth token' (BROAD — replace with a fine-grained PAT)"
-  else
-    echo "No credential at $PAT_FILE. Write a fine-grained PAT there, then re-run:" >&2
-    echo "  printf '%s' '<token>' > $PAT_FILE && chmod 600 $PAT_FILE" >&2
-    exit 2
-  fi
+# Reuses the shared PAT when present, so a new instance needs no credential setup at all.
+# Falls back to the gh CLI token, which works but usually carries more PERMISSIONS than the
+# constitution allows (§6 caps them at issues/contents/pull-requests) — see the README.
+if [[ -s "$PAT_FILE" ]]; then
+  echo "credential: $PAT_FILE (existing)"
+elif command -v gh >/dev/null && gh auth token >/dev/null 2>&1; then
+  gh auth token > "$SHARED_PAT"
+  PAT_FILE="$SHARED_PAT"
+  echo "credential: $SHARED_PAT (seeded from 'gh auth token')"
+  echo "  NOTE: that token's PERMISSIONS are broader than §6 allows. Replace it with one"
+  echo "        fine-grained PAT (all your repos is fine; issues + contents + pull requests only):"
+  echo "          printf '%s' '<token>' > $SHARED_PAT && chmod 600 $SHARED_PAT"
+else
+  echo "No credential found. Create one fine-grained PAT (it may cover all your repos;" >&2
+  echo "permissions: issues, contents, pull requests only), then:" >&2
+  echo "  printf '%s' '<token>' > $SHARED_PAT && chmod 600 $SHARED_PAT" >&2
+  exit 2
 fi
 chmod 600 "$PAT_FILE"
 TOKEN="$(cat "$PAT_FILE")"

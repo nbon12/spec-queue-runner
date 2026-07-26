@@ -14,8 +14,8 @@ launchd fires one every 5 minutes. Nothing runs on the host except Docker + laun
 - **Volume**: `sr-self-home` mounted at `/home/runner` — holds the Claude OAuth
   (`.claude/`), the clone (`clone/`), worktrees (`work/`), and the lock/log (`state/`).
   One volume so the lock file is shared and overlapping ticks mutually-exclude.
-- **Secret**: `~/.config/spec-runner/spec-queue-runner.pat` (chmod 600, **outside the repo**),
-  mounted read-only at `/run/secrets/github_pat`.
+- **Secret**: `~/.config/spec-runner/github.pat` (chmod 600, **outside the repo**), mounted
+  read-only at `/run/secrets/github_pat`. Shared by every instance (constitution v4.0.0).
 - **launchd job**: `com.spec-runner.nbon12.spec-queue-runner`, StartInterval 300s.
   Output goes to `~/.config/spec-runner/scheduler.log`.
 
@@ -51,12 +51,12 @@ rm ~/Library/LaunchAgents/com.spec-runner.nbon12.spec-queue-runner.plist
 
 ## Known trade-offs (worth tightening before you rely on it)
 
-1. **GitHub credential is the broad `gh` OAuth token, not a least-privilege PAT.**
-   It works, but the constitution (§6) wants a fine-grained token scoped to this one
-   repo (Issues, Contents, Pull requests only). To swap it in:
+1. **GitHub credential is the broad `gh` OAuth token.** Repository breadth is fine
+   (§6, v4.0.0 — one PAT may serve every instance), but that token's *permissions*
+   exceed the mandated ceiling of issues + contents + pull requests. To swap it in:
    ```bash
-   printf '%s' '<fine-grained-token>' > ~/.config/spec-runner/spec-queue-runner.pat
-   chmod 600 ~/.config/spec-runner/spec-queue-runner.pat
+   printf '%s' '<fine-grained-token>' > ~/.config/spec-runner/github.pat
+   chmod 600 ~/.config/spec-runner/github.pat
    # also update the clone's push remote inside the volume to use the new token
    ```
 

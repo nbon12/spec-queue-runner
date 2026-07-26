@@ -10,7 +10,7 @@ IMAGE="spec-runner:latest"
 # No --init: the image's ENTRYPOINT is already tini as PID 1 (it reaps the claude/git/tmux
 # children each tick spawns). Adding --init would nest a second tini and warn.
 exec docker run --rm --platform linux/arm64 \
-  -v "${SECRET_DIR}/spec-queue-runner.pat:/run/secrets/github_pat:ro" \
+  -v "${SECRET_DIR}/github.pat:/run/secrets/github_pat:ro" \
   -v "sr-self-home:/home/runner" \
   -v "${REPO_ROOT}/deploy/spec-queue-runner.toml:/etc/spec-runner/config.toml:ro" \
   "${IMAGE}" "$@"
