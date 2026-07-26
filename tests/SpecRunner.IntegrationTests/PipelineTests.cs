@@ -152,6 +152,42 @@ public class PipelineTests
     }
 
     [Fact]
+    public async Task Iceboxed_item_is_skipped_even_when_labelled_ready()
+    {
+        var tmp = Directory.CreateTempSubdirectory("icebox");
+        try
+        {
+            var github = new InMemoryGitHubClient();
+            github.AddUser("operator", 100);
+            // The contradictory case: parked by the operator, yet still carrying status/ready.
+            // `icebox` must win — otherwise it is a safeguard a stray label can override.
+            github.AddIssue(20, "Parked idea", "Targets: none", "operator", 100,
+                "status/ready", "icebox", "kind/chore", "stage/intake");
+
+            var config = new InstanceConfig
+            {
+                Slug = "op/repo", Path = "/clone",
+                WorktreesRoot = Path.Combine(tmp.FullName, "work"),
+                OperatorLogin = "operator", BaseBranch = "master",
+                GitHubPatFile = "/run/secrets/pat",
+                ClaudeConfigPath = Path.Combine(tmp.FullName, ".claude.json"),
+                Lock = Path.Combine(tmp.FullName, ".lock"),
+            };
+            var processes = new RecordingProcessRunner();
+
+            await new Tick(config, github, processes, TextWriter.Null).RunAsync();
+
+            Assert.Empty(github.OpenedPrs);
+            Assert.DoesNotContain("stage/implement", github.Issue(20).Labels);
+            Assert.Empty(processes.Invocations);   // never even reached the process boundary
+        }
+        finally
+        {
+            tmp.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Stale_in_progress_item_is_reclaimed_to_ready()
     {
         var tmp = Directory.CreateTempSubdirectory("stale1");

@@ -12,7 +12,29 @@ state store (FR-004).
 | Kind | `kind/feature`, `kind/amendment`, `kind/chore`, `kind/spike`, `kind/audit` | inferred at intake (FR-016) |
 | Status | `status/ready`, `status/in-progress`, `status/live`, `status/waiting`, `status/held` | the queue state; closed = done |
 | Stage | `stage/intake` … `stage/implement`, `stage/review` | **a cache** over the worktree predicate (FR-013) |
+| Parked | `icebox` (issue stays **open**) | operator-applied |
 | Terminal | `abandoned` (with closed) | operator-applied |
+
+### `icebox` — a parked idea
+
+An open item the operator is deliberately *not* queueing: a concept kept so the thinking is not
+lost, with no intention of working it soon. It is **not** a pipeline stage — stages answer "what
+work comes next", and an iceboxed item has no next work. It is not `status/held` either: held is
+automatic and dependency-driven, and the runner promotes it once the dependency lands. Nothing
+promotes an iceboxed item but the operator.
+
+Mechanically the label is almost redundant: work selection reads only `status/ready`, and the sole
+promotions to ready (stale reclaim, live-session resolution) apply to items already in flight — so
+an item without `status/ready` is already invisible. Its first job is to make intent *legible to
+humans*: absence of a label says "not triaged", which is a different thing from "considered, and
+deliberately shelved".
+
+Its second job is to be a safeguard that actually holds. **The runner skips an iceboxed item even
+if it also carries `status/ready`** — a "do not work this" marker that a stray label can override
+would be a trap rather than a safeguard, so the two are not allowed to disagree in the runner's
+favour.
+
+Promote by removing `icebox` and applying `status/ready`.
 
 Label writes are expressed as a desired-state set, never blind add/remove, so a tick killed
 mid-write converges on re-run (research R10).

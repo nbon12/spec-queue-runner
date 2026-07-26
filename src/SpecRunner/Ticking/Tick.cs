@@ -84,6 +84,15 @@ public sealed class Tick(
                 continue;
             }
 
+            // `icebox` is the operator deliberately parking an item (issue-conventions.md). It
+            // normally works by absence of status/ready, but enforce it here too: a "do not work
+            // this" marker that a stray label can override is a trap, not a safeguard.
+            if (candidate.HasLabel("icebox"))
+            {
+                log.WriteLine($"#{candidate.Number} is iceboxed — parked by the operator; skipping.");
+                continue;
+            }
+
             // Only touch the process boundary once we have an operator-authored candidate — an
             // attacker's issue never causes so much as a git call (injection canary).
             targetsOnBase ??= await BaseTargetsAsync(ct).ConfigureAwait(false);
