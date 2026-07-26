@@ -4,7 +4,10 @@
 
 **Created**: 2026-07-26
 
-**Status**: Draft — ready for `/speckit.plan`
+**Status**: **Icebox** — a parked concept, deliberately not queued. No answers are being sought and
+no planning should begin. It exists so the thinking is not lost, not because it is next. Promoting it
+means the operator explicitly labels the tracking issue `status/ready`; until then nothing —
+human or runner — should act on it.
 
 **Input**: User description: "I'm wondering if we can maybe host this tick service instead of running it locally on my laptop. Basically have it run in Kubernetes where it does the git checkouts in pods."
 
@@ -308,7 +311,9 @@ hold, it is cited as `001/FR-nnn`.
 
 ## Handoff notes
 
-For the session picking this up.
+For the session picking this up — **if and when it is un-iceboxed**. This spec is parked (see
+Status). If you are reading it because it appeared in a worktree rather than because the operator
+asked for it, that is a mistake: stop and say so.
 
 **Start here**: read [`docs/kubernetes-hosting.md`](../../docs/kubernetes-hosting.md) in full, then
 `.specify/memory/constitution.md` §2 (containerization), §3 (invariants), §5 (ports and adapters),
