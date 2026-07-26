@@ -30,7 +30,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 ARG USERNAME=runner
-RUN useradd --create-home --uid 1000 --shell /bin/bash ${USERNAME}
+# UID 1000 is load-bearing: the instance volume's files are owned by it, so the runner must keep
+# that uid to read its own clone and credential. The SDK base already ships a user at 1000
+# (unlike debian-slim), so reclaim it rather than picking a different uid and breaking the volume.
+RUN if id -u 1000 >/dev/null 2>&1; then \
+        userdel -r "$(id -un 1000)" 2>/dev/null || userdel "$(id -un 1000)"; \
+    fi \
+ && useradd --create-home --uid 1000 --shell /bin/bash ${USERNAME}
 USER ${USERNAME}
 WORKDIR /home/${USERNAME}
 
