@@ -22,6 +22,14 @@ public static class RunStageCommand
 
         Console.WriteLine($"ensuring worktree for item #{number} …");
         var path = await worktrees.EnsureAsync(number).ConfigureAwait(false);
+        if (path is null)
+        {
+            Console.Error.WriteLine(
+                "could not fetch the base branch, so the worktree would have been cut from a base " +
+                "of unknown age — refusing. Check the network and re-run.");
+            return (int)ExitCode.EnvironmentFailure;
+        }
+
         Console.WriteLine($"worktree: {path} (branch {WorktreeLifecycle.BranchFor(number)}), trust pre-seeded");
 
         var claude = new ClaudeInvoker(processes, permissionMode: "acceptEdits");

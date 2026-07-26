@@ -1,0 +1,33 @@
+# This workflow is the required status check named in the base-branch ruleset
+# (deploy/branch-protection.sh). It exists so "require branches to be up to date before merging"
+# has a check to be strict about: GitHub runs it against the merge of the PR with the base, so a
+# branch that has fallen behind cannot satisfy the strict policy without being rebased first.
+
+name: verify
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      # The same gate the runner applies in the worktree before it merges its own PR
+      # (`verify` in the instance config), so the two cannot disagree.
+      - name: build
+        run: dotnet build SpecRunner.slnx -c Debug
+
+      - name: test
+        run: dotnet test SpecRunner.slnx -c Debug --no-build

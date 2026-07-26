@@ -157,6 +157,9 @@ Examples of foundational tasks (adjust based on your project):
 - [ ] TXXX [P] Additional unit tests (if requested) in tests/unit/
 - [ ] TXXX Security hardening
 - [ ] TXXX Run quickstart.md validation
+- [ ] TXXX **Ensure the branch is up to date before merging** (CLAUDE.md): fetch the base, and if
+      the branch is behind it, rebase onto the base and force-push with lease, then re-run review
+      and verification on the rebased branch. A branch behind the base is never merged as-is.
 
 ---
 
@@ -170,6 +173,8 @@ Examples of foundational tasks (adjust based on your project):
   - User stories can then proceed in parallel (if staffed)
   - Or sequentially in priority order (P1 → P2 → P3)
 - **Polish (Final Phase)**: Depends on all desired user stories being complete
+- **Merge**: the branch-freshness task above is the LAST task before a merge, and it runs after
+  review and verification — it is what makes their verdicts true of the code that actually lands
 
 ### User Story Dependencies
 
