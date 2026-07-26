@@ -170,10 +170,66 @@ public sealed class Tick(
                 .ConfigureAwait(false);
             log.WriteLine($"#{item.Number} {stage} recorded complete.");
         }
+        else
+        {
+            await RecordNoProgressAsync(item, stage.Value, ct).ConfigureAwait(false);
+        }
 
         // Clear the in-progress marker so the stale sweep never reclaims a healthy item.
         await github.RemoveLabelAsync(item.Number, "status/in-progress", ct).ConfigureAwait(false);
         return (int)Cli.ExitCode.Ok;
+    }
+
+    /// <summary>
+    /// Count a stage that reported no progress, and park the item once it has had enough tries
+    /// (<see cref="StallGuard"/>). Selection runs one item per tick, lowest number first, so an
+    /// item that can never finish does not just fail — it starves everything behind it. Parking
+    /// takes it out of the ready set so the queue drains past it; the work is handed back to the
+    /// operator, not abandoned.
+    ///
+    /// Stages that deliberately move an item elsewhere — clarify, which sends it to waiting or to
+    /// a live session — also report "not completed", but they are not stalls. They are told apart
+    /// by the item having already left the ready set.
+    /// </summary>
+    private async Task RecordNoProgressAsync(WorkItem item, Stage stage, CancellationToken ct)
+    {
+        var current = await github.GetIssueAsync(item.Number, ct).ConfigureAwait(false);
+        if (!current.Labels.Contains("status/ready"))
+        {
+            return; // the stage parked it on purpose; nothing stalled
+        }
+
+        var bodies = await github.GetCommentBodiesAsync(item.Number, ct).ConfigureAwait(false);
+        var attempt = StallGuard.AttemptsAt(bodies, item.Number, stage) + 1;
+
+        if (attempt < StallGuard.MaxAttempts)
+        {
+            await github.AddCommentAsync(item.Number,
+                $"""
+                {StallGuard.Marker(item.Number, stage, attempt)}
+                **No progress at {stage}** — attempt {attempt} of {StallGuard.MaxAttempts}. The
+                stage ran but did not complete; the runner will try again next tick.
+                """, ct).ConfigureAwait(false);
+            log.WriteLine($"#{item.Number} made no progress at {stage} " +
+                          $"(attempt {attempt}/{StallGuard.MaxAttempts}).");
+            return;
+        }
+
+        await github.AddCommentAsync(item.Number,
+            $"""
+            {StallGuard.Marker(item.Number, stage, attempt)}
+            **Parked at {stage}** — {StallGuard.MaxAttempts} consecutive attempts made no progress,
+            so the item has been moved out of the ready queue and the runner has gone on to the
+            next item. Nothing has been discarded: the worktree, the branch, and this issue are
+            untouched.
+
+            Re-apply `status/ready` once the cause is addressed, and the runner will resume from
+            this stage.
+            """, ct).ConfigureAwait(false);
+        await github.AddLabelsAsync(item.Number, ["status/waiting"], ct).ConfigureAwait(false);
+        await github.RemoveLabelAsync(item.Number, "status/ready", ct).ConfigureAwait(false);
+        log.WriteLine($"#{item.Number} parked at {stage} after {StallGuard.MaxAttempts} " +
+                      "attempts with no progress; queue moving on.");
     }
 
     /// <summary>
@@ -570,16 +626,46 @@ public sealed class Tick(
         }
 
         var git = new Git(processes);
-        if (!await git.HasChangesAsync(worktreePath, ct).ConfigureAwait(false))
+        var branch = WorktreeLifecycle.BranchFor(item.Number);
+
+        // "Nothing to commit" is two different states, and reading them as one is what strands an
+        // item. Either the run genuinely wrote nothing, or a previous run wrote and committed and
+        // then failed before the push landed — in which case the worktree is clean *because* the
+        // work is done. Only the first is a no-op; the second must carry on to the push and PR, or
+        // finished work sits on a local branch that no later tick can see (§3: do → commit → label
+        // means an interrupted stage resumes, never restarts from a false premise).
+        var hasChanges = await git.HasChangesAsync(worktreePath, ct).ConfigureAwait(false);
+        if (hasChanges)
         {
-            log.WriteLine("implement produced no changes — leaving item open.");
-            return false;
+            await git.CommitAllAsync(worktreePath, $"implement #{item.Number}: {item.Title}", ct)
+                .ConfigureAwait(false);
+            var sha = await git.HeadShaAsync(worktreePath, ct).ConfigureAwait(false);
+            log.WriteLine($"committed {sha[..Math.Min(7, sha.Length)]} on {branch}");
+        }
+        else
+        {
+            var unpushed = await git
+                .UnpushedCommitsAsync(worktreePath, branch, config.BaseBranch, ct).ConfigureAwait(false);
+            if (unpushed == 0)
+            {
+                log.WriteLine("implement produced no changes — leaving item open.");
+                return false;
+            }
+
+            log.WriteLine($"implement wrote nothing new, but {unpushed} commit(s) on {branch} " +
+                          "never reached origin — resuming from the push.");
         }
 
-        var branch = WorktreeLifecycle.BranchFor(item.Number);
-        await git.CommitAllAsync(worktreePath, $"implement #{item.Number}: {item.Title}", ct).ConfigureAwait(false);
-        var sha = await git.HeadShaAsync(worktreePath, ct).ConfigureAwait(false);
-        log.WriteLine($"committed {sha[..Math.Min(7, sha.Length)]} on {branch}");
+        // The PR is the stage's artifact, so re-running the stage must not open a second one
+        // (§3: a stage whose re-run would duplicate its artifact MUST be guarded). The marker a
+        // previous run left is the record that one already exists.
+        var recorded = await github.GetCommentBodiesAsync(item.Number, ct).ConfigureAwait(false);
+        if (recorded.Any(b => b.Contains($"kind=pr id=pr-{item.Number}", StringComparison.Ordinal)))
+        {
+            await git.PushAsync(worktreePath, branch, ct).ConfigureAwait(false);
+            log.WriteLine($"pushed {branch}; a pull request is already recorded on #{item.Number}.");
+            return true;
+        }
 
         await git.PushAsync(worktreePath, branch, ct).ConfigureAwait(false);
         log.WriteLine($"pushed {branch}");

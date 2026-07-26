@@ -18,8 +18,64 @@ public sealed class Git(IProcessRunner processes)
         await Run(worktree, ct, "commit", "-m", message).ConfigureAwait(false);
     }
 
-    public async Task PushAsync(string worktree, string branch, CancellationToken ct = default) =>
+    /// <summary>
+    /// Push the item's branch, recovering from the one rejection that is expected in normal
+    /// operation: the remote copy moved while the runner held the worktree (an operator pushed a
+    /// fix, a rebase landed). A plain push throws there, and because the stage has already
+    /// committed, the item is left committed-but-unpushed — a state no later tick could leave,
+    /// since a clean worktree reads as "nothing to do". So rebase onto the remote and retry once.
+    ///
+    /// Only a fast-forward rejection is recoverable this way. A conflicting rebase is aborted and
+    /// raised: the worktree is left exactly as it was, for a human to resolve.
+    /// </summary>
+    public async Task PushAsync(string worktree, string branch, CancellationToken ct = default)
+    {
+        var first = await processes.RunAsync("git", ["push", "-u", "origin", branch], worktree, ct: ct)
+            .ConfigureAwait(false);
+        if (first.ExitCode == 0)
+        {
+            return;
+        }
+
+        await Run(worktree, ct, "fetch", "origin", branch).ConfigureAwait(false);
+
+        var rebase = await processes.RunAsync("git", ["rebase", $"origin/{branch}"], worktree, ct: ct)
+            .ConfigureAwait(false);
+        if (rebase.ExitCode != 0)
+        {
+            // Leave no half-applied rebase behind; the next tick must find a usable worktree.
+            await processes.RunAsync("git", ["rebase", "--abort"], worktree, ct: ct).ConfigureAwait(false);
+            throw new InvalidOperationException(
+                $"git push origin {branch} was rejected and the branch could not be rebased onto " +
+                $"origin/{branch}: {rebase.Combined}");
+        }
+
         await Run(worktree, ct, "push", "-u", "origin", branch).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Commits on HEAD that origin's copy of <paramref name="branch"/> does not have. A positive
+    /// count with a clean working tree is the "committed, but the push did not land" state: real
+    /// work that exists only in the worktree, which a check for uncommitted changes cannot see.
+    /// A branch with no remote counterpart yet counts everything since the base as unpushed.
+    /// </summary>
+    public async Task<int> UnpushedCommitsAsync(
+        string worktree, string branch, string baseBranch, CancellationToken ct = default)
+    {
+        // Refresh the remote-tracking ref. A branch never pushed simply fails here, which is the
+        // signal to compare against the base instead.
+        await processes.RunAsync("git", ["fetch", "origin", branch], worktree, ct: ct)
+            .ConfigureAwait(false);
+
+        var known = await processes.RunAsync(
+            "git", ["rev-parse", "--verify", "--quiet", $"refs/remotes/origin/{branch}"],
+            worktree, ct: ct).ConfigureAwait(false);
+        var upstream = known.ExitCode == 0 ? $"origin/{branch}" : $"origin/{baseBranch}";
+
+        var count = await processes.RunAsync(
+            "git", ["rev-list", "--count", $"{upstream}..HEAD"], worktree, ct: ct).ConfigureAwait(false);
+        return count.ExitCode == 0 && int.TryParse(count.Stdout.Trim(), out var n) ? n : 0;
+    }
 
     public async Task<string> HeadShaAsync(string worktree, CancellationToken ct = default)
     {

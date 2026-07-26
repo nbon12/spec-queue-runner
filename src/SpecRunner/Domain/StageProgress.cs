@@ -60,5 +60,7 @@ public static class StageProgress
     public static IReadOnlyList<Stage> Completed(Kind kind, IReadOnlyCollection<string> labels) =>
         StageSequence.For(kind).Where(s => labels.Contains(LabelFor(s))).ToList();
 
-    private static string Name(Stage stage) => stage.ToString().ToLowerInvariant();
+    /// <summary>The stage's canonical lowercase name — the stem of its label and of any other
+    /// per-stage identifier, so the two can never drift apart.</summary>
+    public static string Name(Stage stage) => stage.ToString().ToLowerInvariant();
 }
