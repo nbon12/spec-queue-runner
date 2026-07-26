@@ -239,7 +239,8 @@ public class BranchFreshnessTests
                         FetchFails ? "could not read from remote repository" : string.Empty);
 
                 case "rev-list":
-                    return new ProcessResult(0, Behind.ToString(), string.Empty);
+                    return new ProcessResult(
+                        0, Behind.ToString(System.Globalization.CultureInfo.InvariantCulture), string.Empty);
 
                 case "rev-parse":
                     return new ProcessResult(0, $"sha{_head}", string.Empty);
