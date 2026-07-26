@@ -55,13 +55,20 @@ public class PipelineTests
             Assert.True(github.Issue(3).Open);
             Assert.Empty(github.OpenedPrs);
 
-            // Tick 2: implement → PR opened, issue STAYS OPEN (review pending, FR-033a).
+            // Tick 2: plan. A chore's sequence is intake → plan → implement → review, and every
+            // stage in it now actually runs: under the old predicate model `planExists` was
+            // vacuously true for non-spec kinds, so plan was silently skipped for every chore.
+            await new Tick(config, github, processes, TextWriter.Null).RunAsync();
+            Assert.Contains("stage/plan", github.Issue(3).Labels);
+            Assert.Empty(github.OpenedPrs);
+
+            // Tick 3: implement → PR opened, issue STAYS OPEN (review pending, FR-033a).
             await new Tick(config, github, processes, TextWriter.Null).RunAsync();
             Assert.Single(github.OpenedPrs);
             Assert.True(github.Issue(3).Open);
             Assert.Contains("stage/implement", github.Issue(3).Labels);
 
-            // Tick 3: review → merge + digest + close.
+            // Tick 4: review → merge + digest + close.
             await new Tick(config, github, processes, TextWriter.Null).RunAsync();
             Assert.Contains("stage/review", github.Issue(3).Labels);
             Assert.Single(github.MergedPrs);
@@ -86,7 +93,7 @@ public class PipelineTests
             var github = new InMemoryGitHubClient();
             github.AddUser("operator", 100);
             github.AddIssue(4, "Add a file", "Targets: none", "operator", 100,
-                "status/ready", "kind/chore", "stage/intake", "stage/implement");
+                "status/ready", "kind/chore", "stage/intake", "stage/plan", "stage/implement");
             github.Issue(4).Comments.Add("<!-- spec-runner:v1 kind=pr id=pr-4 number=42 -->");
 
             var config = new InstanceConfig
@@ -122,7 +129,7 @@ public class PipelineTests
             var github = new InMemoryGitHubClient();
             github.AddUser("operator", 100);
             github.AddIssue(9, "Amend the widget spec", "", "operator", 100,
-                "status/ready", "kind/chore", "stage/intake");
+                "status/ready", "kind/chore", "stage/intake", "stage/plan");
             // GitHub's native relationship: #9 is blocked by #20, which is still open.
             github.AddIssue(20, "Land the widget spec", "", "operator", 100);
             github.AddBlockedBy(9, 20);
@@ -155,7 +162,7 @@ public class PipelineTests
             // The contradictory case: parked by the operator, yet still carrying status/ready.
             // `icebox` must win — otherwise it is a safeguard a stray label can override.
             github.AddIssue(20, "Parked idea", "", "operator", 100,
-                "status/ready", "icebox", "kind/chore", "stage/intake");
+                "status/ready", "icebox", "kind/chore", "stage/intake", "stage/plan");
 
             var processes = new RecordingProcessRunner();
             await new Tick(HeldConfig(tmp), github, processes, TextWriter.Null).RunAsync();
@@ -179,7 +186,7 @@ public class PipelineTests
             var github = new InMemoryGitHubClient();
             github.AddUser("operator", 100);
             github.AddIssue(9, "Amend the widget spec", "", "operator", 100,
-                "status/ready", "kind/chore", "stage/intake");
+                "status/ready", "kind/chore", "stage/intake", "stage/plan");
             github.AddIssue(20, "Land the spec", "", "operator", 100);
             github.AddIssue(21, "Land the schema", "", "operator", 100);
             github.AddIssue(22, "Already done", "", "operator", 100);
@@ -210,7 +217,7 @@ public class PipelineTests
             var github = new InMemoryGitHubClient();
             github.AddUser("operator", 100);
             github.AddIssue(9, "Add a file", "", "operator", 100,
-                "status/ready", "kind/chore", "stage/intake");
+                "status/ready", "kind/chore", "stage/intake", "stage/plan");
             github.AddIssue(20, "First blocker", "", "operator", 100);
             github.AddIssue(21, "Second blocker", "", "operator", 100);
             github.AddBlockedBy(9, 20, 21);
@@ -256,7 +263,7 @@ public class PipelineTests
             github.AddUser("operator", 100);
             // Prose that used to wedge the item forever is now inert: no relationship, no hold.
             github.AddIssue(9, "Add a file", "Targets: specs/010-widget/spec.md\nBlocked by: #999",
-                "operator", 100, "status/ready", "kind/chore", "stage/intake");
+                "operator", 100, "status/ready", "kind/chore", "stage/intake", "stage/plan");
 
             var processes = new RecordingProcessRunner
             {
@@ -297,7 +304,7 @@ public class PipelineTests
             var github = new InMemoryGitHubClient();
             github.AddUser("operator", 100);
             github.AddIssue(12, "Wedged item", "Targets: none", "operator", 100,
-                "status/in-progress", "kind/chore", "stage/intake");
+                "status/in-progress", "kind/chore", "stage/intake", "stage/plan");
             // Applied 5h ago; threshold is 2h ⇒ stale.
             var now = new DateTimeOffset(2026, 7, 25, 12, 0, 0, TimeSpan.Zero);
             github.SetLabeledAt(12, "status/in-progress", now.AddHours(-5));
@@ -335,7 +342,7 @@ public class PipelineTests
             var github = new InMemoryGitHubClient();
             github.AddUser("operator", 100);
             github.AddIssue(13, "Working item", "Targets: none", "operator", 100,
-                "status/in-progress", "kind/chore", "stage/intake");
+                "status/in-progress", "kind/chore", "stage/intake", "stage/plan");
             var now = new DateTimeOffset(2026, 7, 25, 12, 0, 0, TimeSpan.Zero);
             github.SetLabeledAt(13, "status/in-progress", now.AddMinutes(-10)); // 10 min < 2h
 
@@ -405,7 +412,7 @@ public class PipelineTests
             var github = new InMemoryGitHubClient();
             github.AddUser("operator", 100);
             github.AddIssue(7, "Nightly audit", "Recurring: nightly\nTargets: none", "operator", 100,
-                "status/ready", "kind/chore", "stage/intake", "stage/implement");
+                "status/ready", "kind/chore", "stage/intake", "stage/plan", "stage/implement");
             github.Issue(7).Comments.Add("<!-- spec-runner:v1 kind=pr id=pr-7 number=71 -->");
 
             var config = new InstanceConfig

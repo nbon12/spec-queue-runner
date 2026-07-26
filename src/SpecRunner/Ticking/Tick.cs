@@ -128,44 +128,74 @@ public sealed class Tick(
             processes, config.Path, config.WorktreesRoot, ResolveClaudeConfig(), config.BaseBranch);
         var worktreePath = await worktrees.EnsureAsync(item.Number, ct).ConfigureAwait(false);
 
-        var snapshot = SnapshotFrom(worktreePath, kind, item);
-        var stage = StageDerivation.Derive(kind, snapshot);
+        // Position is the first stage with no completion label (constitution §3, v6.0.0). The
+        // worktree holds the work; the issue holds the record of what is done.
+        var stage = StageProgress.Derive(kind, item.Labels);
         if (stage is null)
         {
-            log.WriteLine($"#{item.Number} has no unsatisfied stage — nothing to do.");
+            log.WriteLine($"#{item.Number} has every stage recorded — nothing to do.");
             return (int)Cli.ExitCode.Ok;
         }
 
-        log.WriteLine($"#{item.Number} kind={kind} stage={stage}");
+        var done = StageProgress.Completed(kind, item.Labels);
+        log.WriteLine($"#{item.Number} kind={kind} stage={stage} " +
+                      $"(done: {(done.Count == 0 ? "none" : string.Join(" → ", done))})");
 
         // Mark in-progress before invoking Claude (FR-011). If the tick dies mid-stage the label
         // persists and a later tick's stale sweep reclaims it (FR-044); a clean run clears it below,
         // and paths that move the item elsewhere (clarify → waiting/live) simply leave it cleared.
         await github.AddLabelsAsync(item.Number, ["status/in-progress"], ct).ConfigureAwait(false);
 
-        switch (stage)
+        // Each handler reports whether the stage actually finished. Only then is completion
+        // recorded — and only after the work is committed, never before (§3: do → commit → label,
+        // so a crash can cause a re-run but never a false claim of completion).
+        var completed = stage switch
         {
-            case Stage.Implement when kind is Kind.Audit:
-                await RunAuditAsync(item, worktreePath, ct).ConfigureAwait(false);
-                break;
-            case Stage.Implement:
-                await RunImplementAsync(item, kind, worktreePath, ct).ConfigureAwait(false);
-                break;
-            case Stage.Review:
-                await RunReviewAsync(item, worktreePath, ct).ConfigureAwait(false);
-                break;
-            case Stage.Clarify:
-                await RunClarifyBlockAsync(item, worktreePath, isExecutionBlock: false, ct).ConfigureAwait(false);
-                break;
-            default:
-                await RunSpecKitStageAsync(item, stage.Value, worktreePath, ct).ConfigureAwait(false);
-                break;
+            Stage.Implement when kind is Kind.Audit =>
+                await RunAuditAsync(item, worktreePath, ct).ConfigureAwait(false),
+            Stage.Implement =>
+                await RunImplementAsync(item, kind, worktreePath, ct).ConfigureAwait(false),
+            Stage.Review =>
+                await RunReviewAsync(item, worktreePath, ct).ConfigureAwait(false),
+            Stage.Clarify =>
+                await RunClarifyBlockAsync(item, worktreePath, isExecutionBlock: false, ct).ConfigureAwait(false),
+            _ =>
+                await RunSpecKitStageAsync(item, stage.Value, worktreePath, ct).ConfigureAwait(false),
+        };
+
+        if (completed)
+        {
+            await CommitStageArtifactsAsync(item, stage.Value, worktreePath, ct).ConfigureAwait(false);
+            await github.AddLabelsAsync(item.Number, [StageProgress.LabelFor(stage.Value)], ct)
+                .ConfigureAwait(false);
+            log.WriteLine($"#{item.Number} {stage} recorded complete.");
         }
 
-        // Stage completed without a crash — clear the in-progress marker so the stale sweep never
-        // reclaims a healthy item.
+        // Clear the in-progress marker so the stale sweep never reclaims a healthy item.
         await github.RemoveLabelAsync(item.Number, "status/in-progress", ct).ConfigureAwait(false);
         return (int)Cli.ExitCode.Ok;
+    }
+
+    /// <summary>
+    /// Commit and push whatever the stage produced, before its completion label is written
+    /// (§3, v6.0.0). Without this a stage's artifacts would live only in an uncommitted worktree,
+    /// so a lost worktree would lose completed work that the issue claims is done. Stages that
+    /// already committed (implement) simply find nothing to add.
+    /// </summary>
+    private async Task CommitStageArtifactsAsync(
+        WorkItem item, Stage stage, string worktreePath, CancellationToken ct)
+    {
+        var git = new Git(processes);
+        if (!await git.HasChangesAsync(worktreePath, ct).ConfigureAwait(false))
+        {
+            return;
+        }
+
+        var branch = WorktreeLifecycle.BranchFor(item.Number);
+        await git.CommitAllAsync(worktreePath, $"{stage.ToString().ToLowerInvariant()} #{item.Number}: {item.Title}", ct)
+            .ConfigureAwait(false);
+        await git.PushAsync(worktreePath, branch, ct).ConfigureAwait(false);
+        log.WriteLine($"#{item.Number} {stage} artifacts committed and pushed to {branch}.");
     }
 
     // Reset any operator item stuck in-progress past the staleness threshold (FR-044). The label's
@@ -213,19 +243,20 @@ public sealed class Tick(
     // A block (FR-031/018): inside waking hours the operator gets a live session on their phone
     // (FR-021); outside them, the comment fallback holds until morning (FR-026/019). The choice is
     // the only difference — both channels resolve the same open questions.
-    private async Task RunClarifyBlockAsync(
+    private async Task<bool> RunClarifyBlockAsync(
         WorkItem item, string worktreePath, bool isExecutionBlock, CancellationToken ct)
     {
         var waking = WakingHours.Parse(config.WakingHours);
         if (waking.Contains(_now()))
         {
             await RunLiveSessionAsync(item, worktreePath, isExecutionBlock, ct).ConfigureAwait(false);
+            // A live session is a block, not a completion — clarify finishes when the questions
+            // are actually resolved, which a later tick observes.
+            return false;
         }
-        else
-        {
-            log.WriteLine("block outside waking hours — using the comment fallback (FR-026).");
-            await RunClarifyFallbackAsync(item, worktreePath, ct).ConfigureAwait(false);
-        }
+
+        log.WriteLine("block outside waking hours — using the comment fallback (FR-026).");
+        return await RunClarifyFallbackAsync(item, worktreePath, ct).ConfigureAwait(false);
     }
 
     // Spawn the live session (FR-021/022): a detached tmux session in the item's own worktree,
@@ -331,8 +362,11 @@ public sealed class Tick(
         // Resolved by either path: the session wrote answers into the spec (markers cleared), OR
         // the operator answered by comment while the session was open (FR-024) — a plain reply, not
         // one of the runner's own marker comments. Either closes the now-redundant session.
-        var specDir = FindSpecDir(worktreePath);
-        var resolvedByWorktree = specDir is null || MarkerCount(specDir) == 0;
+        // Fail SAFE: an unlocatable spec is an UNKNOWN state, not a resolved one. Treating it as
+        // resolved would reap a live session the operator is still using and re-ready the item
+        // mid-conversation. Only a spec we can actually read, with its markers cleared, resolves.
+        var specDir = await SpecDirForItemAsync(worktreePath, ct).ConfigureAwait(false);
+        var resolvedByWorktree = specDir is not null && UnresolvedMarkers(specDir) == 0;
         var resolvedByComment = await OperatorRepliedAsync(op, item.Number, ct).ConfigureAwait(false);
         if (resolvedByWorktree || resolvedByComment)
         {
@@ -368,9 +402,9 @@ public sealed class Tick(
     // Clarify blocks (FR-018). Without a live channel this is the comment fallback (FR-019/027):
     // read the markers specify materialized, post them as one numbered comment, and move the item
     // to waiting — the operator answers by reply, which a later tick collects.
-    private async Task RunClarifyFallbackAsync(WorkItem item, string worktreePath, CancellationToken ct)
+    private async Task<bool> RunClarifyFallbackAsync(WorkItem item, string worktreePath, CancellationToken ct)
     {
-        var specDir = FindSpecDir(worktreePath);
+        var specDir = await SpecDirForItemAsync(worktreePath, ct).ConfigureAwait(false);
         var specFile = specDir is null ? null : System.IO.Path.Combine(specDir, "spec.md");
         var specText = specFile is not null && File.Exists(specFile)
             ? await File.ReadAllTextAsync(specFile, ct).ConfigureAwait(false)
@@ -379,24 +413,36 @@ public sealed class Tick(
         var questions = ClarifyMarkers.Extract(specText);
         if (questions.Count == 0)
         {
-            log.WriteLine("clarify: no markers to resolve — advancing.");
+            log.WriteLine("clarify: no markers to resolve — stage complete.");
             await github.RemoveLabelAsync(item.Number, "status/waiting", ct).ConfigureAwait(false);
-            return;
+            return true;
         }
 
         var bodies = await github.GetCommentBodiesAsync(item.Number, ct).ConfigureAwait(false);
         if (IdempotencyMarker.AlreadyPresent(bodies, "questions", $"clarify-{item.Number}"))
         {
             log.WriteLine("clarify: questions already posted — waiting on the operator.");
-            return;
+            return false;
         }
 
         var comment = ClarifyMarkers.QuestionsComment(
             item.Number, questions, "no live session established for this run");
         await github.AddCommentAsync(item.Number, comment, ct).ConfigureAwait(false);
-        await github.AddLabelsAsync(item.Number, ["stage/clarify", "status/waiting"], ct).ConfigureAwait(false);
+        await github.AddLabelsAsync(item.Number, ["status/waiting"], ct).ConfigureAwait(false);
         await github.RemoveLabelAsync(item.Number, "status/ready", ct).ConfigureAwait(false);
         log.WriteLine($"clarify: posted {questions.Count} question(s); waiting on the operator.");
+        return false;   // the operator's answers are what complete this stage
+    }
+
+    /// <summary>
+    /// The item's own spec directory, as an absolute path — discovered from its branch rather
+    /// than by scanning <c>specs/</c> (constitution §3, v6.0.0). Null before specify has run.
+    /// </summary>
+    private async Task<string?> SpecDirForItemAsync(string worktreePath, CancellationToken ct)
+    {
+        var relative = await new Git(processes)
+            .SpecDirOnBranchAsync(worktreePath, config.BaseBranch, ct).ConfigureAwait(false);
+        return relative is null ? null : System.IO.Path.Combine(worktreePath, relative);
     }
 
     private string ResolveClaudeConfig() =>
@@ -443,13 +489,28 @@ public sealed class Tick(
         return classification.Kind;
     }
 
-    private async Task RunSpecKitStageAsync(WorkItem item, Stage stage, string worktreePath, CancellationToken ct)
+    private async Task<bool> RunSpecKitStageAsync(WorkItem item, Stage stage, string worktreePath, CancellationToken ct)
     {
         var prompt = StageCommand.PromptFor(stage, item.Title);
         if (prompt is null)
         {
             log.WriteLine($"stage {stage} is runner-driven; no SpecKit command.");
-            return;
+            return true;   // nothing to run means nothing to wait for
+        }
+
+        // Idempotency guard for the one stage whose re-run duplicates its artifact (§3, v6.0.0).
+        // Because completion is recorded AFTER the work, a crash in that window re-runs the stage;
+        // for specify that would allocate a SECOND spec directory rather than reuse the first.
+        // If the branch already carries one, the work was done — record it instead of redoing it.
+        if (stage is Stage.Specify)
+        {
+            var existing = await SpecDirForItemAsync(worktreePath, ct).ConfigureAwait(false);
+            if (existing is not null)
+            {
+                log.WriteLine($"specify: `{System.IO.Path.GetFileName(existing)}` already on this " +
+                              "branch — recording complete rather than allocating a second.");
+                return true;
+            }
         }
 
         var claude = new ClaudeInvoker(processes, config.PermissionMode);
@@ -460,7 +521,7 @@ public sealed class Tick(
 
         if (outcome is StageResult.Succeeded)
         {
-            return;
+            return true;
         }
 
         // The stage's artifacts are its exit predicate, so a failed run simply does not advance
@@ -474,9 +535,10 @@ public sealed class Tick(
 
             {StageOutcome.Excerpt(result.Combined, "Run output")}
             """, ct).ConfigureAwait(false);
+        return false;
     }
 
-    private async Task RunImplementAsync(WorkItem item, Kind kind, string worktreePath, CancellationToken ct)
+    private async Task<bool> RunImplementAsync(WorkItem item, Kind kind, string worktreePath, CancellationToken ct)
     {
         var claude = new ClaudeInvoker(processes, config.PermissionMode);
         var prompt =
@@ -504,14 +566,14 @@ public sealed class Tick(
                 {StageOutcome.Excerpt(result.Combined, "Run output")}
                 """, ct).ConfigureAwait(false);
             log.WriteLine("implement: did not complete; no PR opened.");
-            return;
+            return false;
         }
 
         var git = new Git(processes);
         if (!await git.HasChangesAsync(worktreePath, ct).ConfigureAwait(false))
         {
             log.WriteLine("implement produced no changes — leaving item open.");
-            return;
+            return false;
         }
 
         var branch = WorktreeLifecycle.BranchFor(item.Number);
@@ -540,13 +602,14 @@ public sealed class Tick(
             ct).ConfigureAwait(false);
         await github.AddLabelsAsync(item.Number, ["stage/implement"], ct).ConfigureAwait(false);
         log.WriteLine($"#{item.Number} at review next tick; PR {pr.Number} open.");
+        return true;
     }
 
     // An audit (FR-038–041) reads one spec — the least recently audited — compares it against the
     // code, and reports. It MODIFIES NOTHING (FR-039): no branch, no PR, no diff. Findings become
     // a comment on the audit issue; any follow-up work is filed as fresh, unclassified issues by
     // the operator or a later run. One spec per audit; coverage comes from cadence (FR-041).
-    private async Task RunAuditAsync(WorkItem item, string worktreePath, CancellationToken ct)
+    private async Task<bool> RunAuditAsync(WorkItem item, string worktreePath, CancellationToken ct)
     {
         var specDirs = ListSpecDirs(worktreePath);
         var target = AuditSelection.LeastRecentlyAudited(
@@ -558,7 +621,7 @@ public sealed class Tick(
                 $"<!-- spec-runner:v1 kind=audit id=audit-{item.Number} -->\n**Audit** — no specs present to audit.",
                 ct).ConfigureAwait(false);
             await github.CloseIssueAsync(item.Number, ct).ConfigureAwait(false);
-            return;
+            return true;   // no specs to audit is a completed audit, not a failure
         }
 
         var claude = new ClaudeInvoker(processes, config.PermissionMode);
@@ -589,7 +652,7 @@ public sealed class Tick(
                 """, ct).ConfigureAwait(false);
             await github.AddLabelsAsync(item.Number, ["status/ready"], ct).ConfigureAwait(false);
             log.WriteLine($"#{item.Number} audit did not complete; left open for retry.");
-            return;
+            return false;
         }
 
         // The findings ARE the product of an audit (FR-039), so they go in the comment. Previously
@@ -608,6 +671,7 @@ public sealed class Tick(
         log.WriteLine($"#{item.Number} audit complete; closed.");
 
         await FileSuccessorIfRecurringAsync(item, ct).ConfigureAwait(false);
+        return true;
     }
 
     private static List<string> ListSpecDirs(string worktreePath)
@@ -624,14 +688,14 @@ public sealed class Tick(
             .ToList();
     }
 
-    private async Task RunReviewAsync(WorkItem item, string worktreePath, CancellationToken ct)
+    private async Task<bool> RunReviewAsync(WorkItem item, string worktreePath, CancellationToken ct)
     {
         var bodies = await github.GetCommentBodiesAsync(item.Number, ct).ConfigureAwait(false);
         var prNumber = FindPrNumber(bodies);
         if (prNumber is null)
         {
             log.WriteLine("review: could not find the PR marker — leaving item for next tick.");
-            return;
+            return false;
         }
 
         // Review runs in a FRESH session (FR-034a1) with the repo's own review prompt (FR-034d).
@@ -670,7 +734,7 @@ public sealed class Tick(
             // Back to ready so a later tick picks it up again (FR-043 for the rate-limit case).
             await github.AddLabelsAsync(item.Number, ["status/ready"], ct).ConfigureAwait(false);
             log.WriteLine($"review: not merging #{prNumber}; item left open for retry.");
-            return;
+            return false;
         }
 
         // Review record (always posted, FR-034f). It reports what the review SAID; it does not
@@ -707,7 +771,7 @@ public sealed class Tick(
                     {StageOutcome.Excerpt(verification.Combined, "Verification output")}
                     """, ct).ConfigureAwait(false);
                 await github.AddLabelsAsync(item.Number, ["status/ready"], ct).ConfigureAwait(false);
-                return;
+                return false;
             }
 
             log.WriteLine("verify: passed.");
@@ -751,6 +815,7 @@ public sealed class Tick(
         // Recurrence (FR-042): a recurring item files a successor on reaching terminal state. The
         // closed issue stays closed — the book is append-only. The successor re-enters at intake.
         await FileSuccessorIfRecurringAsync(item, ct).ConfigureAwait(false);
+        return true;
     }
 
     private async Task FileSuccessorIfRecurringAsync(WorkItem item, CancellationToken ct)
@@ -807,47 +872,9 @@ public sealed class Tick(
     // The demo drives the implement path directly; a full build reads spec/plan/tasks presence
     // from the worktree. For a chore, intake -> (plan) -> implement; here we treat a classified
     // item with no open PR as ready to implement.
-    private static WorktreeSnapshot SnapshotFrom(string worktreePath, Kind kind, WorkItem item)
-    {
-        // Read the item's own worktree (never the clone, FR-013). A feature's artifacts live in
-        // its spec directory; the first unsatisfied predicate names the stage. For a chore/spike/
-        // audit — kinds with no spec — the shaping/planning predicates are vacuously satisfied so
-        // derivation lands on implement.
-        var isSpecKind = kind is Kind.Feature or Kind.Amendment;
-        var specDir = FindSpecDir(worktreePath);
-
-        bool Exists(string file) =>
-            specDir is not null && File.Exists(Path.Combine(specDir, file));
-
-        var specExists = !isSpecKind || Exists("spec.md");
-        var planExists = !isSpecKind || Exists("plan.md");
-        var tasksExists = !isSpecKind || Exists("tasks.md");
-        var analysisRecorded = !isSpecKind || Exists("analysis.md") || item.HasLabel("stage/analyze");
-
-        return new WorktreeSnapshot(
-            KindResolved: true,
-            SpecExists: specExists,
-            UnresolvedMarkerCount: specExists ? MarkerCount(specDir) : 1,
-            PlanExists: planExists,
-            TasksExists: tasksExists,
-            AnalysisRecorded: analysisRecorded,
-            PullRequestOpen: item.HasLabel("stage/implement"),
-            ReviewRecorded: item.HasLabel("stage/review"));
-    }
-
-    // The active feature's spec directory under specs/ (SpecKit convention: specs/NNN-name/).
-    private static string? FindSpecDir(string worktreePath)
-    {
-        var specs = Path.Combine(worktreePath, "specs");
-        if (!Directory.Exists(specs))
-        {
-            return null;
-        }
-
-        return Directory.GetDirectories(specs).OrderByDescending(d => d).FirstOrDefault();
-    }
-
-    private static int MarkerCount(string? specDir)
+    /// <summary>Unresolved clarification markers in an item's spec — the live sweep's
+    /// "is the block resolved?" signal.</summary>
+    private static int UnresolvedMarkers(string? specDir)
     {
         if (specDir is null)
         {

@@ -34,6 +34,18 @@ public class LiveChannelTests
         Lock = Path.Combine(tmp, ".lock"),
     };
 
+    /// <summary>
+    /// A process runner that reports the seeded spec directory as this branch's addition, which
+    /// is how the runner now locates an item's spec (constitution §3, v6.0.0).
+    /// </summary>
+    private static RecordingProcessRunner RunnerWithSpecOnBranch() => new()
+    {
+        Respond = inv =>
+            inv.FileName == "git" && (inv.Arguments.Contains("diff") || inv.Arguments.Contains("ls-files"))
+                ? new SpecRunner.Ports.ProcessResult(0, "specs/001-widget/spec.md\n", "")
+                : new SpecRunner.Ports.ProcessResult(0, "", ""),
+    };
+
     [Fact]
     public async Task Clarify_block_in_waking_hours_spawns_a_live_session()
     {
@@ -46,7 +58,7 @@ public class LiveChannelTests
             var github = new InMemoryGitHubClient();
             github.AddUser("operator", 100);
             github.AddIssue(5, "Amend widget", "Targets: none", "operator", 100,
-                "status/ready", "kind/amendment", "stage/intake");
+                "status/ready", "kind/amendment", "stage/intake", "stage/specify");
 
             var worktreePath = Path.Combine(worktreesRoot, "5");
             var sessions = new InMemoryClaudeSessionStore();
@@ -86,9 +98,9 @@ public class LiveChannelTests
             var github = new InMemoryGitHubClient();
             github.AddUser("operator", 100);
             github.AddIssue(5, "Amend widget", "Targets: none", "operator", 100,
-                "status/ready", "kind/amendment", "stage/intake");
+                "status/ready", "kind/amendment", "stage/intake", "stage/specify");
 
-            var processes = new RecordingProcessRunner();
+            var processes = RunnerWithSpecOnBranch();
             var tick = new Tick(ConfigFor(tmp.FullName, worktreesRoot), github, processes,
                 TextWriter.Null, new InMemoryClaudeSessionStore(), () => new TimeOnly(3, 0)); // 3am
             await tick.RunAsync();
@@ -119,7 +131,7 @@ public class LiveChannelTests
                 "status/live", "kind/amendment", "stage/clarify");
             github.Issue(6).Comments.Add("<!-- spec-runner:v1 kind=session id=live-6 -->\nLive session: conv-xyz");
 
-            var processes = new RecordingProcessRunner();
+            var processes = RunnerWithSpecOnBranch();
             var tick = new Tick(ConfigFor(tmp.FullName, worktreesRoot), github, processes,
                 TextWriter.Null, new InMemoryClaudeSessionStore(), () => new TimeOnly(12, 0));
             await tick.RunAsync();
@@ -155,7 +167,7 @@ public class LiveChannelTests
             // ...but the operator answered the block directly in a comment (FR-024).
             github.AddComment(8, 100, "Use the blue variant, ship it.");
 
-            var processes = new RecordingProcessRunner();
+            var processes = RunnerWithSpecOnBranch();
             var tick = new Tick(ConfigFor(tmp.FullName, worktreesRoot), github, processes,
                 TextWriter.Null, new InMemoryClaudeSessionStore(), () => new TimeOnly(12, 0));
             await tick.RunAsync();

@@ -39,7 +39,7 @@ public class StageFailureTests
         var github = new InMemoryGitHubClient();
         github.AddUser("operator", 100);
         github.AddIssue(number, "Add a thing", "Targets: none", "operator", 100,
-            "status/ready", "kind/chore", "stage/intake", "stage/implement");
+            "status/ready", "kind/chore", "stage/intake", "stage/plan", "stage/implement");
         github.Issue(number).Comments.Add($"<!-- spec-runner:v1 kind=pr id=pr-{number} number=99 -->");
         return github;
     }
@@ -218,7 +218,7 @@ public class StageFailureTests
             var github = new InMemoryGitHubClient();
             github.AddUser("operator", 100);
             github.AddIssue(9, "Add a thing", "Targets: none", "operator", 100,
-                "status/ready", "kind/chore", "stage/intake");
+                "status/ready", "kind/chore", "stage/intake", "stage/plan");
 
             // claude fails, but `git status --porcelain` would still report a dirty tree —
             // partial work must not be presented as a finished change.

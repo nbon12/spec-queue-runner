@@ -11,7 +11,7 @@ state store (FR-004).
 |---|---|---|
 | Kind | `kind/feature`, `kind/amendment`, `kind/chore`, `kind/spike`, `kind/audit` | inferred at intake (FR-016) |
 | Status | `status/ready`, `status/in-progress`, `status/live`, `status/waiting`, `status/held` | the queue state; closed = done |
-| Stage | `stage/intake` … `stage/implement`, `stage/review` | **a cache** over the worktree predicate (FR-013) |
+| Stage | `stage/intake` … `stage/implement`, `stage/review` | **the authority** for pipeline position (FR-013) |
 | Parked | `icebox` (issue stays **open**) | operator-applied |
 | Terminal | `abandoned` (with closed) | operator-applied |
 
@@ -38,6 +38,11 @@ Promote by removing `icebox` and applying `status/ready`.
 
 Label writes are expressed as a desired-state set, never blind add/remove, so a tick killed
 mid-write converges on re-run (research R10).
+
+A `stage/*` label means **that stage is complete**. Position is the first stage in the kind's
+sequence with no such label, so the labels are both the state machine and its audit trail.
+They are written only after the stage's work is committed and pushed — never before — so a
+crash can cause a stage to re-run but can never mark one falsely done.
 
 ## Dependencies
 
