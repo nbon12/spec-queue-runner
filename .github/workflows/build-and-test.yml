@@ -1,22 +1,32 @@
-name: CI
+name: build and test
 
 # A status check on the pull request itself. The runner also verifies before it merges,
 # but that gate lives in its log; this one is visible on GitHub, survives the runner being
 # stopped or misconfigured, and builds on a clean checkout — so it catches anything that
 # only works because a tool happens to be installed in the runner's image.
+#
+# The job id is the check name branch protection references (contracts/ci-check.md). It has
+# no `name:` override on purpose: setting one would rename the check to the display string
+# and silently stop satisfying a `build-and-test` requirement.
 on:
   pull_request:
-    branches: [master]
+    types: [opened, synchronize, reopened]
   push:
     branches: [master]
 
 permissions:
   contents: read
 
+# The runner pushes to a work/NN branch repeatedly within a single item; paying for
+# superseded runs is pure waste. A cancelled run carries no verdict and is not a pass.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-and-test:
-    name: Build and test
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
