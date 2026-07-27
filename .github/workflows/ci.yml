@@ -1,0 +1,43 @@
+name: CI
+
+# A status check on the pull request itself. The runner also verifies before it merges,
+# but that gate lives in its log; this one is visible on GitHub, survives the runner being
+# stopped or misconfigured, and builds on a clean checkout — so it catches anything that
+# only works because a tool happens to be installed in the runner's image.
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Build and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          # Matches <TargetFramework>net10.0</TargetFramework> in Directory.Build.props.
+          dotnet-version: '10.0.x'
+
+      # setup-dotnet's built-in cache needs a packages.lock.json, which this repo does not
+      # use; cache the NuGet package folder directly, keyed on the files that name packages.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', 'Directory.Build.props') }}
+          restore-keys: nuget-${{ runner.os }}-
+
+      - name: Restore
+        run: dotnet restore SpecRunner.slnx
+
+      - name: Build
+        run: dotnet build SpecRunner.slnx -c Debug --no-restore
+
+      - name: Test
+        run: dotnet test SpecRunner.slnx -c Debug --no-build

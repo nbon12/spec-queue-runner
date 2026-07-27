@@ -49,6 +49,22 @@ merges its own PR once review passes with no blocking finding, and posts a diges
 auto-merge on, the always-block list — including `spend_cap` — is the only human checkpoint.
 Set `auto_merge = false` to put yourself back in the loop.
 
+### 2b. Land the build-and-test check, and require it (both by hand)
+
+Neither step is runner behaviour, and neither can be — both sit outside the token ceiling §6
+defines (R18). See [contracts/ci-check.md](./contracts/ci-check.md).
+
+1. **Commit `.github/workflows/build-and-test.yml` yourself.** GitHub rejects any push touching
+   `.github/workflows/` unless the credential holds the Workflows permission, which the runner's
+   PAT must never have. If the runner authored the file on a branch, push that branch by hand.
+2. **Then require the check** — branch protection → require status checks → `build-and-test`.
+   Administration is likewise outside the ceiling, so this is yours.
+
+**Order matters, and getting it backwards stalls the queue.** Require the check only *after* the
+runner's merge stage is deployed. Against a runner that merges in the same tick it opens the PR, a
+required check makes every merge fail with a 405 and leaves items open with unmerged PRs and
+nothing reported (R18, Decision 2).
+
 ### 3. Write the instance config
 
 See `contracts/config-schema.md` for the full schema and validation rules. One file per
@@ -93,6 +109,12 @@ dotnet test tests/SpecRunner.PropertyTests             # Tier 3: the two invaria
 
 Tier 2 tests **skip with a stated reason** when tmux is absent — they never silently pass.
 
+The same Tiers 1–3 run on every pull request as the `build-and-test` check, and inside the
+container as the instance's `verify` command before any merge. All three run the identical command
+(`dotnet build SpecRunner.slnx -c Debug && dotnet test SpecRunner.slnx -c Debug`) so a disagreement
+between them can only mean the environment differs — see
+[contracts/ci-check.md](./contracts/ci-check.md).
+
 ## Validation scenarios
 
 Each maps to a success criterion in `spec.md`. The first five run in the harness with the fake
@@ -107,6 +129,7 @@ Each maps to a success criterion in `spec.md`. The first five run in the harness
 | 5 | **Degradable** (SC-007) | the fallback keeps progress moving | Force session establishment to fail. Assert: one comment with all questions, defaults, rationales, and the stated reason; auth failures called out distinctly; a reply resolves it; the next blocked item goes live again with no reset. |
 | 5b | **Reviewed** (SC-009) | nothing closes unreviewed | Run an item whose implementation deliberately omits a test for one acceptance scenario and contains one reversible defect. Assert: the PR opens first and the issue stays open; review examines each touched file before-and-after; it names the uncovered scenario; it fixes the defect on the branch and reports the fixing commit; only then does the issue close and the worktree get pruned. |
 | 5c | **Oriented review** (SC-009, R17) | the reviewer is told what it is reviewing | Run a feature item and a chore item to review with the recording fake `claude`. Assert on the recorded review invocation's prompt: the `review_prompt` file's text appears **verbatim and first**; the PR number and URL, base ref, head branch, and issue number are all present; the feature item names its **own** spec directory (with a second spec directory present in the fixture, to prove it is not guessed); the chore says plainly that it has none; the missing coverage manifest is stated rather than omitted; the issue body appears only inside the delimited data region; and **no comment body appears anywhere in the prompt**. |
+| 5d | **Checked** (FR-057/058, R18) | a pull request is verified by something other than the process merging it | **Part A (manual, one run):** open a pull request. Assert: a check named `build-and-test` appears, runs `dotnet restore` / `build -c Debug` / `test -c Debug` on `SpecRunner.slnx`, and passes — with no secret referenced and no Claude credit spent. **Part B (automated):** drive a chore to the merge stage with the in-memory GitHub reporting `mergeable_state = blocked`. Assert: no digest is posted, the PR is not merged, the issue stays open, and `stage/merge` is absent. Tick again with `clean`. Assert: `verify` runs, the PR merges, the digest is posted **after** the merge, the issue closes — and **no `claude` invocation is recorded on either tick**. |
 | 6 | **Live** (SC-005) | *manual* — phone push, conversational resolution | Force a block during waking hours. Assert: one push, one conversation, resolution lands in the spec/plan file, no typing anywhere else. |
 | 7 | **Patient** (SC-006) | *manual* — 24h across two sleeps | Leave scenario 6's session unanswered for 24 hours through two machine sleeps. Assert: still answerable, resolves on first reply, no timeout, no duplicate push, no re-asked question. |
 

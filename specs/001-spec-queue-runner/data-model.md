@@ -233,3 +233,53 @@ the issue, and the session store (FR-047, §3).
   rebuilds it from authoritative state (§3, per-iteration statelessness).
 - **Spec** 1—1 **coverage entry** in `specs/COVERAGE.md`; a spec's claim of accuracy extends
   only to paths under that entry (FR-037, §9).
+
+---
+
+## MergeDecision (issue #16)
+
+The merge stage's whole judgement, as a value. Derived per tick from the pull request's `mergeable`
+and `mergeable_state` fields — the Pull requests permission the instance already holds — and never
+persisted.
+
+| Decision | Read from | What the stage does |
+|---|---|---|
+| `Ready` | `mergeable_state = clean` | Run `verify`, merge, post the digest, close, prune |
+| `Wait` | `mergeable = null` / state `unknown` or `blocked` | Nothing. No comment, no label — the stage is simply incomplete, and the next tick re-enters it |
+| `Blocked(reason)` | state `dirty`, or a 405 from the merge itself | Post `kind=merge-blocked`, leave the item open and unlabelled |
+
+**Unrecognised states map to `Wait`, never `Ready`.** An answer the runner does not understand must
+never be read as permission to merge.
+
+`Wait` covers two situations GitHub does not distinguish through this field: a check still running,
+and a branch-protection requirement that is unmet for another reason (a failed check, or a missing
+human approval). The runner waits in both, one API call per tick, visible in the log — which is the
+correct behaviour for either, since neither is the runner's to override. Naming *which* check failed
+would require the Checks permission, outside the constitutional ceiling (§6, R18); the report links
+the PR's checks tab, which shows the operator strictly more.
+
+### Merge as a stage
+
+`Stage.Merge` is appended to the sequences of the kinds that write code:
+
+```
+feature/amendment: intake → specify → clarify → plan → tasks → analyze → implement → review → merge
+chore:             intake → plan → implement → review → merge
+spike/audit:       intake → implement            (no diff, so nothing to review or merge)
+```
+
+Waiting therefore needs no new state of its own: an item awaiting a check is an item whose
+`stage/merge` label is absent, which is exactly what the label model already means (§3, v6.0.0).
+The stage spends no credits — it invokes no agent — so re-entering it every tick until the check
+clears costs one API call and nothing else.
+
+### Relationships
+
+- **WorkItem** 1—0..1 **MergeDecision**: recomputed from GitHub each tick, never carried between
+  iterations (§3, per-iteration statelessness).
+- **ReviewRecord** precedes **MergeDecision**: review records that the change was examined; the
+  merge stage records that it was integrated. Separating them is what lets a blocked merge retry
+  without re-running the reviewer.
+- **PullRequest** 1—1 the **CI check** described in [contracts/ci-check.md](./contracts/ci-check.md).
+  The runner never reads the check directly — branch protection folds its result into
+  `mergeable_state`, which is the only signal the runner consults.

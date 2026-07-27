@@ -355,3 +355,175 @@ marker is the authoritative record and reading it keeps the runner from assertin
 operator-verified issue (FR-005 filters the candidate before selection) or from the runner's own
 config and git. **No comment body ever enters the review prompt** — which is what keeps the Tier 3
 canary green, and is worth an explicit assertion rather than an inherited one.
+
+---
+
+## R18 — A build-and-test check on pull requests, and what it takes to make it gate (issue #16)
+
+**Problem observed**: constitution §8 states, as a standing rule, that "CI runs the full Tier 1–3
+suite on every PR with no Claude credits spent". There is **no `.github/` directory in this
+repository** — the rule has never been implemented. Every merge to `master` so far has been gated by
+exactly one thing: the runner's own in-container `verify` command
+(`deploy/spec-queue-runner.toml:23` — `dotnet build SpecRunner.slnx -c Debug && dotnet test
+SpecRunner.slnx -c Debug`), run by the same process that decides to merge. A self-check by the
+merging party is not a check on a pull request.
+
+### Decision 1 — the workflow shape
+
+**Decision**: one workflow, `.github/workflows/build-and-test.yml`, one job named
+`build-and-test`, triggered on `pull_request` (opened / synchronize / reopened) and on `push` to the
+base branch. It restores, builds, and tests **`SpecRunner.slnx` in `Debug`** — the same solution,
+configuration, and order the instance's `verify` command uses.
+
+**Rationale**: the value of CI here is a *second, independent* run of the same gate, on
+infrastructure the runner does not control. Two gates running *different* commands would produce
+disagreements nobody can adjudicate — a green `verify` against a red CI would leave the operator
+unable to say which one is lying. Matching the command exactly means a disagreement can only mean
+"environment", which is diagnosable. Tier 1–3 is the whole suite, and it is already CI-shaped: an
+in-memory GitHub client, a `RecordingProcessRunner` (no real `git`, `tmux`, or `claude` is ever
+spawned), and per-test temp directories — so it is offline, credit-free, and needs nothing on the
+runner beyond the SDK.
+
+**Runner image**: `ubuntu-latest` (x64), not arm64, even though the product ships `linux-arm64`. The
+suite is RID-agnostic — it never publishes, never P/Invokes, never shells out — so architecture buys
+nothing here, while arm64 hosted runners add availability and (on private repos) billing-multiplier
+risk. The arm64 build is already proven where it matters: `docker build --platform linux/arm64` in
+the deploy path.
+
+**SDK**: `actions/setup-dotnet` pinned to `10.0.x`, matching `Directory.Build.props` (`net10.0`) and
+the `mcr.microsoft.com/dotnet/sdk:10.0` image the Dockerfile builds from. No `global.json` is added:
+the Dockerfile already floats on the 10.0 SDK band, and pinning CI harder than the image would let
+CI stay green while the shipped artifact breaks — the wrong direction for a check whose purpose is
+predicting the image's behaviour.
+
+**Alternatives considered**:
+
+- *Reuse the Docker image (`docker build .` in CI).* Rejected: the slowest possible way to run a
+  suite that needs only the SDK, it requires QEMU for arm64, and it drags Claude Code's
+  `curl | bash` installer into the critical path of every pull request.
+- *A matrix over Debug and Release.* Rejected for now: `verify` runs Debug only, so a Release-only
+  failure would fail CI on a configuration nothing ships. Worth revisiting if `TreatWarningsAsErrors`
+  ever diverges by configuration.
+- *Add `dotnet format --verify-no-changes` to the same job.* Rejected as separate scope.
+  `TreatWarningsAsErrors=true` with `AnalysisLevel=latest-recommended` already makes the build step
+  **the** analyzer gate for `src/` (§8's "analyzers MUST be enforced in CI"); a style checker is a
+  different rule with a different failure mode, and there is no `.editorconfig` to check against yet.
+- *Cache NuGet via `setup-dotnet`'s `cache: true`.* Rejected: it requires a `packages.lock.json`,
+  which this repo does not have and which is a dependency-management policy of its own. A plain
+  `actions/cache` over `~/.nuget/packages`, keyed on the hash of every `*.csproj` plus
+  `Directory.Build.props`, gets the same win and introduces no new policy.
+
+### Decision 2 — the check cannot gate anything without a runner-side change
+
+This finding shapes the increment, and it is not speculative — it is readable in the code as it
+stands.
+
+`Tick.RunReviewAsync` runs review, posts the review comment, applies `stage/review`
+(`src/SpecRunner/Ticking/Tick.cs:864`), runs `verify`, posts the digest, then calls
+`MergePullRequestAsync` (`src/SpecRunner/Ticking/Tick.cs:916`) — which is `PullRequest.Merge(...)`
+with no mergeability check at all. The pull request is opened and merged **within a single tick**,
+seconds apart. Three consequences follow:
+
+1. **Unrequired, the check is decorative.** A workflow that starts when the PR opens is still
+   queueing when the runner merges. It would report on already-merged commits for every PR the
+   runner files — which is nearly all of them.
+2. **Required, the merge throws.** GitHub answers `PullRequest.Merge` with 405 while a required
+   check is pending or failing. Octokit raises — and the digest claiming
+   `**Merged**: yes (auto-merge on; spend under cap)` has *already been posted*, so the issue would
+   carry a written assertion of a merge that never happened.
+3. **The retry is a silent, permanent stall.** `stage/review` is applied **before** the merge gate,
+   so on the next tick `StageProgress.Derive` returns `null`, and the tick logs
+   `"has every stage recorded — nothing to do"` and exits 0 (`src/SpecRunner/Ticking/Tick.cs:137`).
+   The item sits open with an unmerged PR forever and nothing ever reports it. **This defect exists
+   today**: the identical path is taken whenever `config.Verify` fails, which sets `status/ready`
+   and returns — into a tick that will find nothing to do.
+
+**Decision**: split merging out of review into its own stage, **`Stage.Merge`**, appended to the
+sequences of the three kinds that write code (feature, amendment, chore). Review keeps what review
+is — run the reviewer, post the record, apply `stage/review`. The new stage takes what review should
+never have been doing: evaluate mergeability, run `verify`, post the digest, merge, close, prune.
+
+**Rationale**: this is not a new mechanism; it is the mechanism v6.0.0 already established. "Do →
+commit → label" holds per stage, so a pending check simply means the merge stage has not completed,
+its label is absent, and the next tick re-enters at exactly that point — with **no Claude invocation
+and no credit spend**, because merging is pure API work. All three consequences dissolve: the digest
+moves behind the merge, the retry becomes cheap and correct, and the existing `verify`-failure stall
+is fixed as a consequence rather than as a separate patch. Every alternative required inventing a
+waiting state that the label model already expresses.
+
+**Alternatives considered**:
+
+- *A `status/awaiting-checks` label plus a tick-start reconciler*, shaped like the existing reapers.
+  Rejected: it creates a second, parallel notion of "where the item is" alongside the stage labels —
+  precisely what v6.0.0 collapsed into one.
+- *Delay `stage/review` until after the merge.* Rejected: a blocked merge would then re-run the
+  **reviewer** every tick, spending credits on a condition no review can fix, and the review label
+  would lie about whether review happened.
+- *Enable GitHub's native auto-merge (`enablePullRequestAutoMerge`) and close the item immediately.*
+  Rejected: the item would close before the merge, so a red check leaves the PR unmerged, the issue
+  closed, and nobody told — and §3's "auto-merged work MUST be reported" would be satisfied by a
+  digest that predates the outcome it reports. Forward-only correction makes a wrongly-closed issue
+  expensive to undo.
+- *Leave the check unrequired and accept (1).* Rejected as the primary answer, but retained as the
+  **fallback if Part B slips**: a decorative check still beats no check for operator-authored PRs and
+  for `push` on `master`. Part A is therefore specified to stand alone.
+
+### Decision 3 — how mergeability is read, without widening the token
+
+**Decision**: read the pull request's `mergeable` / `mergeable_state` fields, which the **Pull
+requests: read** permission the instance already holds returns. Map them to a three-way pure
+decision: `Ready` (`clean`); `Wait` (`null`/`unknown` — GitHub computes mergeability
+asynchronously, so this is the *normal* state for a seconds-old PR — or `blocked`, which is what a
+pending or failing required check produces); `Blocked` (`dirty` — a real conflict, which no amount
+of waiting fixes).
+
+**Rationale**: the obvious API is Check Runs (`GET /repos/{o}/{r}/commits/{sha}/check-runs`), which
+would name the failing check and link its log. It needs the fine-grained **Checks** permission —
+read-only, but still an addition to the ceiling §6 calls non-negotiable and enumerates as "issues,
+contents, and pull requests". Widening a constitutional ceiling to obtain nicer error text is a poor
+trade, and `mergeable_state` answers the only question the merge stage actually asks: *may I merge
+right now?* The report links the PR's own checks tab, where the operator sees strictly more than the
+runner could relay.
+
+**The cost, stated**: `blocked` is ambiguous — it means "some branch-protection requirement is
+unmet", covering a pending check, a failed check, and a missing human approval alike. An instance
+whose protection requires approval would wait indefinitely, one API call per tick. That is visible
+in the log rather than silent, and it is the correct behaviour regardless: the runner must not merge
+past a human gate. If per-check reporting is later judged worth it, the follow-up is a §6 amendment
+adding **Checks: read** — filed as the security change it is.
+
+**Belt and braces**: `MergePullRequestAsync` is additionally wrapped so a 405 is caught and reported
+rather than thrown. A read-then-write is inherently racy; the catch is what keeps the race from
+becoming an unhandled fault.
+
+### Decision 4 — the runner cannot land Part A itself
+
+**The token ceiling forbids it.** §6 limits the PAT to issues, contents, and pull requests, and
+names **workflow** among the permissions it must never hold. GitHub refuses any push that creates or
+modifies a file under `.github/workflows/` unless the credential carries the Workflows permission —
+the same rule applies to a GitHub App installation token. The runner can *author*
+`build-and-test.yml` in its worktree; its push will be rejected.
+
+**Decision**: **Part A lands by hand.** The operator commits the workflow file (or pushes the branch
+the runner prepared). Part B — the merge stage — touches no workflow file and flows through the
+queue normally.
+
+**Rationale**: the alternative is amending §6 to grant Workflows write, which would let an
+unattended, prompt-injectable agent rewrite its own CI. The check exists to constrain that agent;
+letting the agent edit the constraint inverts the entire point. Here the ceiling is doing exactly
+the job it was written to do, and the manual step is the feature rather than the friction.
+
+**Making the check *required* is manual for the same reason**: branch protection is an
+administration setting, and administration is outside the ceiling by the same rule. Recorded as an
+operator step in quickstart, never as runner behaviour.
+
+### Open empirical item (the first CI run answers it)
+
+`src/SpecRunner/SpecRunner.csproj` sets `SelfContained=true` and `PublishSingleFile=true` with no
+`RuntimeIdentifier` (the root props deliberately leave it empty for non-test projects). The
+instance's `verify` command runs `dotnet build SpecRunner.slnx -c Debug` in the SDK image and is
+reported to pass, so this is expected to be fine — `PublishSingleFile` is a publish-time property,
+and RID-less `SelfContained` resolves to the host RID at build. If the first CI run contradicts
+that, the fix is `-p:SelfContained=false` on the CI **build** step only, leaving the Dockerfile's
+explicit `-r linux-arm64` publish untouched. Recorded here so a first-run failure is a known branch
+rather than a surprise.
