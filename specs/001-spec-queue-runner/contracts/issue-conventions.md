@@ -11,7 +11,7 @@ state store (FR-004).
 |---|---|---|
 | Kind | `kind/feature`, `kind/amendment`, `kind/chore`, `kind/spike`, `kind/audit` | inferred at intake (FR-016) |
 | Status | `status/ready`, `status/in-progress`, `status/live`, `status/waiting`, `status/held` | the queue state; closed = done |
-| Stage | `stage/intake` … `stage/implement`, `stage/review` | **the authority** for pipeline position (FR-013) |
+| Stage | `stage/intake` … `stage/implement`, `stage/review`, `stage/merge` | **the authority** for pipeline position (FR-013) |
 | Parked | `icebox` (issue stays **open**) | operator-applied |
 | Terminal | `abandoned` (with closed) | operator-applied |
 
@@ -98,7 +98,7 @@ already decided what is schedulable.
 Every runner comment carries an identity marker as its first line:
 
 ```html
-<!-- spec-runner:v1 kind=<decision|questions|held|session|closing|finding|review|digest> id=<sha256-prefix> -->
+<!-- spec-runner:v1 kind=<decision|questions|held|session|closing|finding|review|digest|merge-blocked> id=<sha256-prefix> -->
 ```
 
 The marker serves three purposes: it makes posting idempotent under retry (the runner scans for
@@ -181,10 +181,15 @@ ran, so a silent review and an absent review are distinguishable (FR-034f).
 - **Blocked on**: irreversible findings, if any
 ```
 
-### Digest comment (`kind=digest`) — posted to the PR, immediately before merge
+### Digest comment (`kind=digest`) — posted immediately **after** a successful merge
 
 The operator will most likely never read the diff, because the merge happens without them. This
-comment is therefore their **primary account of the change**, not a footnote (FR-033c):
+comment is therefore their **primary account of the change**, not a footnote (FR-033c).
+
+It is posted **after** the merge returns, never before. A digest posted first would assert
+`**Merged**: yes` and then be contradicted by a 405 from a branch-protection rule — a written claim
+of something that did not happen, which is worse than no digest at all. Merging without a digest
+stays prohibited; the ordering is what makes the claim true when it is made.
 
 ```markdown
 **Digest** — <one-line outcome>
@@ -197,6 +202,26 @@ comment is therefore their **primary account of the change**, not a footnote (FR
 ```
 
 Merging without a digest is prohibited even where merging automatically is not.
+
+### Merge-blocked comment (`kind=merge-blocked`)
+
+Posted when the merge stage finds the pull request unmergeable for a reason waiting cannot fix — a
+conflict with the base branch, or a merge the API refused outright (FR-056).
+
+```markdown
+**Merge blocked** — PR #<n> was not merged and this item stays open.
+
+- **Reason**: <the base branch's own words: conflict, or the API's refusal>
+- **Checks**: <link to the PR's checks tab>
+```
+
+A merge that is merely *waiting* — a check still running, or mergeability not yet computed — posts
+**nothing**. Silence is correct there: the state is transient, the next tick re-enters the merge
+stage, and a comment per tick would be noise the operator learns to ignore. Only a condition that
+will not clear on its own is worth a comment.
+
+Correction is forward-only: the operator pushes a fix to the item's branch, or files a new issue.
+Nothing here reopens or rolls back.
 
 ### Closing comment (`kind=closing`)
 

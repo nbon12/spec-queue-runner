@@ -277,6 +277,165 @@ item's spec directory (or state that it has none), with the version-controlled i
 precedence over all of it" — so the behaviour this increment builds is not behaviour no requirement
 claims.
 
+---
+
+# Increment — A build-and-test check on pull requests (2026-07-27, issue #16)
+
+**Branch**: `work/16` | **Constitution**: v6.0.0 | **Research**: [R18](./research.md#r18--a-build-and-test-check-on-pull-requests-and-what-it-takes-to-make-it-gate-issue-16)
+
+## Summary
+
+Constitution §8 has said since ratification that "CI runs the full Tier 1–3 suite on every PR with
+no Claude credits spent". There is no `.github/` directory. The rule has never been implemented, and
+the only thing standing between generated code and `master` today is the runner's own `verify`
+command — run by the same process that then merges.
+
+This increment adds the check, and makes it capable of actually checking something. Those are two
+separable pieces, and they are planned as such:
+
+- **Part A — the workflow.** `.github/workflows/build-and-test.yml`: restore, build, and test
+  `SpecRunner.slnx` in `Debug` on `ubuntu-latest` with .NET 10, on `pull_request` and on `push` to
+  the base branch. It runs the same command the instance's `verify` runs, so the two gates can only
+  disagree about the environment. Standalone and independently shippable.
+- **Part B — the merge stage.** `Stage.Merge`, appended to the sequence of every kind that writes
+  code. Review stops merging; the new stage evaluates mergeability, runs `verify`, posts the digest,
+  merges, closes, and prunes.
+
+Part B is not scope creep, and the argument for it is mechanical rather than aspirational. The
+runner opens a pull request and merges it in the **same tick**, seconds apart
+(`src/SpecRunner/Ticking/Tick.cs:864-916`). Left unrequired, the new check would still be queueing
+at merge time and would report on already-merged commits for nearly every PR in this repository.
+Made required, `PullRequest.Merge` gets a 405 — *after* the digest comment claiming
+`**Merged**: yes` has already been posted — and the next tick finds `stage/review` present,
+derives `null`, logs `"has every stage recorded — nothing to do"`, and exits 0. The item would sit
+open with an unmerged PR forever, unreported. Part A without Part B is therefore either decorative
+or actively harmful; there is no configuration of the two that is merely "partial".
+
+**That third failure is not hypothetical — it exists in `master` today.** The same path runs
+whenever `config.Verify` fails: the code sets `status/ready` and returns, into a tick that will
+find nothing to do. Part B fixes it as a consequence of its shape, not as a separate patch.
+
+## Blocking precondition — the runner cannot land Part A itself
+
+Constitution §6 caps the PAT at issues, contents, and pull requests, and names **workflow** among
+the permissions it must never hold. GitHub rejects any push that creates or modifies a file under
+`.github/workflows/` unless the credential carries the Workflows permission (the same applies to a
+GitHub App installation token). The runner can write `build-and-test.yml` into its worktree; the
+push will be refused.
+
+**Part A lands by hand** — the operator commits the file, or pushes the branch the runner prepared.
+The alternative, amending §6 to grant Workflows write, would let an unattended and
+prompt-injectable agent rewrite the CI that exists to constrain it. The ceiling is doing its job
+here; the manual step is the feature.
+
+**Marking the check *required* is manual for the same reason**: branch protection is an
+administration setting, and administration is outside the ceiling by the same rule. It is recorded
+as an operator step in [quickstart.md](./quickstart.md), never as runner behaviour.
+
+Part B touches no workflow file and flows through the queue normally.
+
+## Technical Context (delta only)
+
+Everything in the table above still holds. What this increment adds:
+
+**New CI surface** (Part A): `.github/workflows/build-and-test.yml`. `actions/checkout@v4`,
+`actions/setup-dotnet@v4` pinned to `10.0.x`, `actions/cache@v4` over `~/.nuget/packages` keyed on
+the hash of every `*.csproj` plus `Directory.Build.props`. `permissions: contents: read` and
+nothing else; no secrets are referenced, so a fork PR gains no capability. `concurrency` groups by
+ref with `cancel-in-progress: true` — the runner force-pushes to `work/NN` branches repeatedly, and
+paying for superseded runs is waste. `timeout-minutes: 15`. Contract:
+[contracts/ci-check.md](./contracts/ci-check.md).
+
+**New pure surface** (Part B): `Domain/MergeGate.cs` — `Decide(bool? mergeable, string? state) ->
+MergeDecision` returning `Ready`, `Wait`, or `Blocked(reason)`. I/O-free, so every mapping including
+the `null`/`unknown` case is a Tier 1 assertion (§4, "pure logic stays pure").
+
+**Changed** (Part B):
+
+- `Domain/Stage.cs` — a `Merge` member.
+- `Domain/StageSequence.cs` — `Merge` appended to `FeatureLike` and `Chore`. `InvestigateOnly`
+  (spike, audit) is untouched: neither produces a diff, so neither has anything to merge.
+- `Ticking/Tick.cs` — `RunReviewAsync` ends at the review comment and the `stage/review` label;
+  everything from the verify gate onward moves to a new `RunMergeAsync`. The digest moves **behind**
+  the successful merge, so no comment can claim a merge that did not happen.
+- `Ports/IGitHubClient.cs` + the Octokit adapter — `GetMergeabilityAsync(int prNumber)` returning
+  the PR's `Mergeable`/`MergeableState`; `MergePullRequestAsync` wrapped so a 405 is reported rather
+  than thrown.
+- `TestKit/InMemoryGitHubClient.cs` — a settable mergeability, so tests can drive all three
+  decisions.
+
+**Unchanged deliberately**: the `verify` config key and its semantics (CI is a *second* gate, not a
+replacement — an instance with no CI still verifies); the `kind=pr` marker; `ClaudeInvoker` (the
+merge stage spends no credits and invokes no agent); and the review prompt and its context (R17),
+which this increment does not touch.
+
+**Out of scope, and stated rather than absorbed**: per-check reporting ("`build-and-test` failed,
+here is the log") needs the fine-grained **Checks: read** permission, which is an addition to §6's
+ceiling and therefore a security amendment rather than a convenience — filed separately if wanted.
+`mergeable_state` is used instead, and its ambiguity is stated below rather than hidden.
+
+## Constitution Check (increment)
+
+| # | Gate | Source | Verdict |
+|---|---|---|---|
+| 40 | CI runs the full Tier 1–3 suite on every PR, credit-free | §8 | ✅ This is the increment. The suite already uses an in-memory GitHub client and a `RecordingProcessRunner`, so no real `git`, `tmux`, or `claude` is spawned and nothing reaches the network |
+| 41 | Token permissions stay within issues / contents / pull requests | §6 | ✅ Mergeability is read from the PR resource (Pull requests: read, already held). Checks: read is **declined**, and the reporting cost is stated rather than quietly taken |
+| 42 | Workflow files are outside the token ceiling | §6 | ⚠️ **Acknowledged, not violated.** Part A cannot be pushed by the runner and lands by hand; the ceiling is preserved rather than widened |
+| 43 | Branch protection is structural and never worked around | §6 | ✅ The merge stage reads mergeability and declines to merge when the base branch says no — the first code path in this system that respects protection rather than assuming it |
+| 44 | Auto-merged work MUST be reported | §3 | ✅ **Improved.** The digest moves behind the merge, so it can no longer assert an outcome that failed |
+| 45 | Labels are the authority for pipeline position | §3 (v6.0.0) | ✅ Waiting is expressed as "the merge stage has no label yet", not as a new status label or a parallel reconciler |
+| 46 | Do → commit → label, never label → do | §3 (v6.0.0) | ✅ `stage/merge` is applied only after the merge returns. A crash mid-stage re-runs a merge attempt, which is idempotent against an already-merged PR |
+| 47 | Ticks converge; no duplicated comments or labels | §3 | ✅ Digest and blocked-report comments keep their `id=` markers; the merge stage is re-entrant by construction |
+| 48 | Per-iteration statelessness | §3 (v5.0.0) | ✅ Mergeability is read fresh each tick and never carried; the decision is a pure function of that read |
+| 49 | Pure logic testable without I/O | §4 | ✅ `MergeGate.Decide` takes two values and returns a decision |
+| 50 | Exit discipline — a tick with nothing to do exits 0 in seconds | §4 | ✅ A `Wait` decision is one API call and an early return, with no agent invocation |
+| 51 | Forward-only correction | §3 | ✅ A red check is reported and the item stays open; the fix is a new commit or a new issue. Nothing reopens, nothing rolls back |
+| 52 | Dependencies stay minimal | §8 | ✅ No new package. CI adds three first-party GitHub Actions, not project dependencies |
+
+**Result**: PASS, with gate 42 recorded as an acknowledged constraint on *delivery* rather than a
+design violation — the increment respects the ceiling and pays for it with a manual step, which is
+the outcome §6 intends. Complexity Tracking stays empty.
+
+## Implementation shape
+
+Part A first: it is independently shippable, and merging it before Part B is safe **as long as the
+check is not made required until Part B is deployed**. That ordering constraint is the one thing an
+implementer must not get backwards — a required check against today's merge path produces the
+permanent silent stall described above.
+
+Test-first (testing §2.3):
+
+| Tier | Test | Asserts |
+|---|---|---|
+| 1 | `MergeGateTests` (Theory) | `clean` → `Ready`; `null`/`unknown` → `Wait` (the normal state of a seconds-old PR); `blocked` → `Wait`; `dirty` → `Blocked`; an unrecognised state → `Wait`, never `Ready` — an unknown answer must never be read as permission |
+| 1 | `StageSequenceTests` | `Merge` is last for feature, amendment, and chore, and absent for spike and audit; `StageProgress.Derive` returns `Merge` for an item carrying every label through `stage/review` |
+| 2 | `PipelineTests` | a chore whose PR reports `clean` merges, posts the digest **after** the merge, and closes; one reporting `blocked` posts **no** digest, does not merge, does not close, and leaves the item re-enterable at `Merge`; the following tick with `clean` completes it — **with no `claude` invocation recorded on the second tick** |
+| 2 | `StageFailureTests` | a failed `verify` leaves the item at `Merge` and the next tick retries it, rather than logging "nothing to do" — the regression test for the defect in `master` today |
+| 2 | `StageFailureTests` | a 405 from `MergePullRequestAsync` is reported as a comment and leaves the tick's exit code intact, rather than escaping as an unhandled fault |
+| 3 | `CrashConvergenceTests` | a kill injected between merge and label converges: the re-run finds the PR already merged and records completion without a second digest or a second close |
+
+CI is not self-testing — a workflow file cannot be exercised by xUnit. Part A's verification is the
+first run on its own pull request, which is also the cheapest possible proof: if the check appears
+and passes on the PR that introduces it, the contract holds. Recorded as a manual acceptance step in
+[quickstart.md](./quickstart.md) (scenario 5d), in the Tier 4 tradition rather than as an
+unverifiable claim.
+
+Spec obligation (§9, living specifications): `spec.md` describes the merge in FR-033a–d as part of
+review, and describes no continuous-integration check at all. `/speckit.tasks` should carry tasks
+adding:
+
+- **FR-057** — "every pull request MUST be built and tested by a check that runs outside the runner,
+  on the same command the instance's `verify` uses; the check's result is advisory until branch
+  protection requires it, which is an operator action." This is the executable form of the standing
+  §8 rule and the natural companion to FR-056, which already makes the pull request structural.
+- **FR-058** — "merging is its own pipeline stage. An item whose pull request is not mergeable MUST
+  leave the merge unrecorded and retry on a later tick, spending no credits; the digest MUST be
+  posted only after the merge succeeds; and a merge blocked by a conflict MUST be reported and the
+  item left open."
+
+Both are behaviour this increment builds, so without them the spec would describe a system that no
+longer matches the code — which §9 calls a defect.
+
 ## Complexity Tracking
 
 > No Constitution Check violations. This section is intentionally empty.
